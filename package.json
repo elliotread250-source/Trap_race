@@ -1,0 +1,30 @@
+{
+  "name": "trap-race",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Trap Race: a 2D competitive party platformer. Draft items, build the course together, race to the flag.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vite build && node scripts/build-server.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/server/index.js",
+    "test": "vitest run",
+    "e2e": "node tests/e2e/run.mjs",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.25.5",
+    "playwright-core": "1.56.1",
+    "tsx": "4.20.3",
+    "typescript": "5.8.3",
+    "vite": "6.3.5",
+    "vitest": "3.2.4"
+  }
+}
