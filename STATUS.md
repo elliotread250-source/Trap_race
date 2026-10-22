@@ -35,3 +35,10 @@ See README "Limitations".
 
 ## Commands
 `npm test`, `npm run typecheck`, `npm run build`, `npm run e2e`.
+
+## Deployment
+- Railway project "arcade", service `trap-race` (single replica, Dockerfile build, healthcheck `/healthz`), deploys from this repo's `claude/compassionate-ramanujan-hqs0jy` branch.
+- Game URL: https://trap-race-production.up.railway.app
+- Open Arcade card: registry entry `trap-race` in `elliotread250-source/Blackjack` (`arcade/`, branch `claude/awesome-heisenberg-qcknm3`, which the hub service deploys).
+- Hub rollback point before this release: deployment `1b5b5245-17fe-4857-9956-fc4eed04cea8` (commit `d73ded5`).
+- Not verified from the build environment: live browser play against production. The build sandbox's network policy blocks `*.up.railway.app`. Railway reported the deployment healthy (its `/healthz` check passed). Manual check: open the arcade, find Trap Race, Play, Create Room in one browser and Join by code in another, then run one round; also try Play Against AI.
