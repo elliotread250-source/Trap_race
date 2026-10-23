@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CELL, MOVERS, PHYS } from '../../shared/config';
 import { childRect, referenceRects, sweepOf, wheelAngle } from '../../shared/movers';
 import { IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT, overlapsSolid, staticEnv } from '../../shared/physics';
-import { applyBomb, checkPlacement, validatePlacement } from '../../shared/placement';
+import { applyBomb, checkPlacement } from '../../shared/placement';
 import { RaceSim } from '../../shared/race';
 import { lab, put } from './helpers';
 
@@ -19,7 +19,7 @@ describe('shuttle block', () => {
     const w = lab();
     const o = put(w, 'shuttle', 8, 10, 0);
     expect(childRect(o, 0, 0)).toEqual({ x: 8 * C, y: 10 * C, w: 2 * C, h: C });
-    expect(sweepOf(o).sweep.map(c => c.join(','))).toEqual(['8,10', '9,10', '10,10', '11,10', '12,10', '13,10'].slice(0, 2 + MOVERS.shuttleTravelCells));
+    expect(sweepOf(o).sweep.map(c => c.join(','))).toEqual(Array.from({ length: 2 + MOVERS.shuttleTravelCells }, (_, i) => `${8 + i},10`));
     const v = put(w, 'shuttle', 26, 6, 1);
     expect(childRect(v, 0, 0)).toEqual({ x: 26 * C, y: 6 * C, w: C, h: 2 * C });
     expect(sweepOf(v).sweep.every(([x]) => x === 26)).toBe(true);
@@ -83,38 +83,17 @@ describe('shuttle block', () => {
     void o;
   });
 
-  it('never pushes a player through a wall: a shuttle that catches someone against the wall lifts them onto its top', () => {
+  it('reserves nothing: blocks can go in its path and it slides through them, but items still cannot overlap its starting body', () => {
     const w = lab();
-    // floor row 16, wall columns 20-21 from row 4 to 15; the lane runs 15..19 along the floor and stops at the wall
-    put(w, 'shuttle', 15, 15, 0);
-    const sim = riderSim(w);
-    stand(sim, 20 * C - W, 16 * C - H); // pressed against the wall at the end of the lane
-    step(sim);
-    let ok = true;
-    for (let i = 0; i < MOVERS.shuttlePeriodTicks * 2; i++) {
-      step(sim);
-      const b = sim.players[0].body;
-      if (overlapsSolid(staticEnv(w), b.x, b.y)) ok = false;
-      const m = sim.movers[0].rect;
-      if (b.x < m.x + m.w - 0.02 && b.x + W > m.x + 0.02 && b.y < m.y + m.h - 0.02 && b.y + H > m.y + 0.02) ok = false;
-    }
-    expect(ok).toBe(true);
-    expect(sim.players[0].status).toBe('racing');
-  });
-
-  it('reserves its whole lane, rejects paths into terrain, items, safety zones or other lanes, and blocks attachments', () => {
-    const w = lab();
-    expect(checkPlacement(w, { item: 'shuttle', x: 17, y: 10, rot: 0, variant: 0 }).reason).toMatch(/terrain/); // runs into the wall
     put(w, 'shuttle', 8, 10, 0);
-    expect(checkPlacement(w, { item: 'block_1x1', x: 11, y: 10, rot: 0, variant: 0 }).reason).toMatch(/path of a Shuttle/);
-    expect(checkPlacement(w, { item: 'block_1x1', x: 11, y: 9, rot: 0, variant: 0 }).reason).toMatch(/riders would be crushed/);
-    expect(checkPlacement(w, { item: 'coin', x: 11, y: 9, rot: 0, variant: 0 }).ok).toBe(true); // headroom only bars solids
-    expect(checkPlacement(w, { item: 'shuttle', x: 12, y: 8, rot: 1, variant: 0 }).reason).toMatch(/another moving platform|riders/);
+    expect(checkPlacement(w, { item: 'block_1x1', x: 12, y: 10, rot: 0, variant: 0 }).ok).toBe(true); // in the lane, away from its start
+    expect(checkPlacement(w, { item: 'block_1x1', x: 12, y: 9, rot: 0, variant: 0 }).ok).toBe(true); // no rider headroom rule
+    expect(checkPlacement(w, { item: 'block_1x1', x: 9, y: 10, rot: 0, variant: 0 }).reason).toMatch(/Overlaps another solid object/); // its start body is an ordinary object
     expect(checkPlacement(w, { item: 'wire_1', x: 8, y: 9, rot: 0, variant: 0 }).ok).toBe(false);
     expect(checkPlacement(w, { item: 'wire_1', x: 8, y: 9, rot: 0, variant: 0 }).reason).toMatch(/moving platforms|path/);
     expect(checkPlacement(w, { item: 'sniper', x: 8, y: 9, rot: 0, variant: 0 }).ok).toBe(false);
-    expect(checkPlacement(w, { item: 'block_1x1', x: 8, y: 12, rot: 0, variant: 0 }).ok).toBe(true); // just below the lane is free
-    expect(checkPlacement(w, { item: 'shuttle', x: 5, y: 12, rot: 0, variant: 0 }).reason).toMatch(/safety zone/);
+    expect(checkPlacement(w, { item: 'shuttle', x: 5, y: 12, rot: 0, variant: 0 }).reason).toMatch(/safety zone/); // its route may not enter the start zone
+    expect(checkPlacement(w, { item: 'shuttle', x: 34, y: 14, rot: 0, variant: 0 }).reason).toMatch(/leaves the map|safety zone/); // nor the map edge
   });
 });
 
@@ -165,6 +144,7 @@ describe('ferris wheel', () => {
     expect(overlapsSolid(env, 10 * C + 10, 7 * C + 3)).toBe(false);
     expect(checkPlacement(w, { item: 'coin', x: 11, y: 7, rot: 0, variant: 0 }).ok).toBe(true); // inside the ring, off every path
     expect(checkPlacement(w, { item: 'coin', x: 10, y: 7, rot: 0, variant: 0 }).ok).toBe(false); // the pivot handle itself
+    expect(checkPlacement(w, { item: 'block_1x1', x: 13, y: 7, rot: 0, variant: 0 }).ok).toBe(true); // a gondola's path is no longer reserved
     const sw = sweepOf(w.kinematic[0]);
     const lane = new Set(sw.sweep.map(c => c.join(',')));
     expect(lane.has('10,7')).toBe(false);
@@ -193,10 +173,10 @@ describe('ferris wheel', () => {
     expect(drift).toBeLessThan(0.01);
   });
 
-  it('rejects overlapping wheel lanes but allows wheels whose actual swept shapes miss each other', () => {
+  it('lets a second wheel overlap the first one’s orbit: nothing reserves a path', () => {
     const w = lab();
     put(w, 'wheel', 10, 7, 0);
-    expect(checkPlacement(w, { item: 'wheel', x: 14, y: 7, rot: 0, variant: 0 }).ok).toBe(false);
+    expect(checkPlacement(w, { item: 'wheel', x: 14, y: 7, rot: 0, variant: 0 }).ok).toBe(true);
     expect(checkPlacement(w, { item: 'wheel', x: 27, y: 8, rot: 0, variant: 1 }).ok).toBe(true);
   });
 });
@@ -234,14 +214,11 @@ describe('projectiles and bombs against moving platforms', () => {
     expect(checkPlacement(w, { item: 'bomb_1', x: 12, y: 9, rot: 0, variant: 0 }).ok).toBe(false);
     applyBomb(w, [o.id]);
     expect(w.kinematic).toHaveLength(0);
-    expect(w.reserved.every(r => r === '')).toBe(true);
-    expect(w.headroom.every(r => r === '')).toBe(true);
     expect(new RaceSim(w, ['a'], { roundKey: 'x', maxTicks: 10 }).movers).toHaveLength(0);
   });
 
-  it('validatePlacement accepts movers on an open course and keeps the route to the flag', () => {
+  it('placement accepts movers on an open course', () => {
     const w = lab();
-    const r = validatePlacement(w, { item: 'shuttle', x: 8, y: 13, rot: 0, variant: 0 }, null);
-    expect(r.check.ok).toBe(true);
+    expect(checkPlacement(w, { item: 'shuttle', x: 8, y: 13, rot: 0, variant: 0 }).ok).toBe(true);
   });
 });

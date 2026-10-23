@@ -1,10 +1,10 @@
 // Headless benchmark: seeded matches of bots only (plus one idle spectator-like human slot is not used).
-// Reports finish rates, stuck incidents and validation cost per map. npx tsx scripts/bot-bench.ts [rounds] [difficulty]
+// Reports finish rates, stuck incidents and validation cost per map. npx tsx scripts/bot-bench.ts [scoreToWin 5-15] [difficulty]
 import { Room } from '../server/room';
 import { MAP_LIST } from '../shared/maps';
 import type { Difficulty } from '../shared/config';
 
-const rounds = Number(process.argv[2] ?? 3);
+const rounds = Number(process.argv[2] ?? 5); // score to win
 const diff = (process.argv[3] ?? 'medium') as Difficulty;
 const maps = process.argv[4] ? [process.argv[4]] : MAP_LIST.map(m => m.id);
 for (const mapId of maps) {
@@ -13,7 +13,7 @@ for (const mapId of maps) {
   const host = room.addHuman('Host', 0);
   if ('error' in host) throw new Error(host.error);
   for (let i = 0; i < 4; i++) room.addBot(diff);
-  room.mapId = mapId; room.rounds = rounds;
+  room.mapId = mapId; room.target = Math.max(5, Math.min(15, rounds));
   // the human slot is a bot too for benchmarking: swap it out
   room.members = room.members.filter(m => m.bot);
   room.members.push({ ...host, connected: true });

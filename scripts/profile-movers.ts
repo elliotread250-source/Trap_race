@@ -4,7 +4,7 @@ import { World } from '../shared/world';
 import { baseNav, NavGraph } from '../shared/nav';
 import { RaceSim } from '../shared/race';
 import { BotRacer } from '../server/bots';
-import { applyPlacement, checkPlacement, makeObject, validatePlacement } from '../shared/placement';
+import { applyPlacement, assessPlacement as validatePlacement, checkPlacement, makeObject } from '../shared/placement';
 import { Rng } from '../shared/rng';
 
 const mapId = process.argv[2] ?? 'mountain';

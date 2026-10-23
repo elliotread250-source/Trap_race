@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rotateMask } from '../../shared/grid';
 import { ITEM_LIST, getItem } from '../../shared/items';
 import { MAP_LIST } from '../../shared/maps';
-import { applyBomb, checkPlacement, validatePlacement } from '../../shared/placement';
+import { applyBomb, assessPlacement, checkPlacement } from '../../shared/placement';
 import { TERRAIN_ID, World } from '../../shared/world';
 import { lab, put } from './helpers';
 
@@ -84,12 +84,14 @@ describe('grid and occupancy', () => {
     expect(checkPlacement(w, { item: 'block_1x1', x: 3, y: 14, rot: 0, variant: 0 }).reason).toBe('Inside start safety zone');
     expect(checkPlacement(w, { item: 'block_1x1', x: 36, y: 14, rot: 0, variant: 0 }).reason).toBe('Inside finish safety zone');
   });
-  it('rejects placements that block every route, using real movement', () => {
+  it('accepts a legal placement that seals the last route: the route check is advisory only', () => {
     const w = lab();
-    // the lab wall is climbable by wall jumps; sealing the gap above it blocks the route
-    const r = validatePlacement(w, { item: 'plank_3', x: 20, y: 1, rot: 1, variant: 0 }, null);
-    expect(r.check.ok).toBe(false);
-    expect(r.check.reason).toMatch(/block every route/);
+    // the lab wall is climbable by wall jumps; sealing the gap above it blocks every route
+    const req = { item: 'plank_3', x: 20, y: 1, rot: 1, variant: 0 };
+    expect(checkPlacement(w, req).ok).toBe(true);
+    const a = assessPlacement(w, req, null);
+    expect(a.check.ok).toBe(true);
+    expect(a.blocksRoute).toBe(true); // bots can see it, nothing refuses it
   });
 });
 
@@ -102,7 +104,7 @@ describe('tripod sniper support', () => {
     put(w, 'plank_5', 6, 9);
     expect(checkPlacement(w, { item: 'sniper', x: 7, y: 10, rot: 0, variant: 0 }).reason).toMatch(/top of a solid/); // under a ceiling
     expect(checkPlacement(w, { item: 'sniper', x: 7, y: 8, rot: 0, variant: 0 }).ok).toBe(true); // on top of the plank
-    put(w, 'spikes', 12, 12);
+    put(w, 'spiky_oval', 12, 12);
     expect(checkPlacement(w, { item: 'sniper', x: 12, y: 11, rot: 0, variant: 0 }).ok).toBe(false); // on a non-solid trap
     put(w, 'moving', 26, 10);
     expect(checkPlacement(w, { item: 'sniper', x: 26, y: 9, rot: 0, variant: 0 }).ok).toBe(false); // moving supports are not allowed

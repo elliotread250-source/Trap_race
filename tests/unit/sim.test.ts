@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CELL, HAZARD, PHYS, TICK_HZ } from '../../shared/config';
+import { CELL, fmtPts, HAZARD, PHYS, SCORING, TICK_HZ } from '../../shared/config';
 import { IN_JUMP, IN_LEFT, IN_RIGHT, newBody, staticEnv, stepBody } from '../../shared/physics';
 import { RaceSim, type RaceEvent } from '../../shared/race';
 import { rankMatch, scoreRound } from '../../shared/scoring';
@@ -75,6 +75,7 @@ describe('launchers and projectiles', () => {
     expect(fires[0].t).toBe(150);
     const deaths = ev.filter(e => e.type === 'death') as Extract<RaceEvent, { type: 'death' }>[];
     expect(deaths.map(d => d.pid).sort()).toEqual(['a', 'b']);
+    expect(deaths.every(d => d.t === 150)).toBe(true); // the shot lands on the firing tick, with no travel time
     expect(deaths.every(d => d.credit === 'owner')).toBe(true);
     expect(sim.player('c')!.status).toBe('racing'); // behind the plank
     const sim2 = new RaceSim(lab(), ['x'], { roundKey: 'k2', maxTicks: 2000 });
@@ -100,23 +101,33 @@ describe('launchers and projectiles', () => {
     expect(vx).toBeCloseTo(HAZARD.cannonMuzzleSpeed * Math.cos(Math.PI / 6), 3);
   });
 
-  it('arrows fly straight at constant speed and break on the first player even with a shield', () => {
+  it('arrows fly straight at the slower constant speed, one per second, and break on the first player even with a shield', () => {
     const w = lab();
     const cb = put(w, 'crossbow', 8, 15, 0, 'o');
     const sim = new RaceSim(w, ['o', 'a', 'b'], { roundKey: 'k', maxTicks: 2000 });
-    place(sim, 'o', 3); place(sim, 'a', 12); place(sim, 'b', 15);
+    place(sim, 'o', 3); place(sim, 'a', 18); place(sim, 'b', 19);
     sim.player('a')!.effects.shield = 5;
-    steps(sim, 120);
-    const arrow = sim.projectiles.find(p => p.src === cb.id)!;
-    const speed = Math.hypot(arrow.vx, arrow.vy);
-    steps(sim, 3);
-    expect(Math.hypot(arrow.vx, arrow.vy)).toBe(speed);
-    expect(arrow.vy).toBe(0);
-    steps(sim, 60);
-    expect(sim.player('a')!.status).toBe('racing'); // shield absorbed it
-    expect(sim.player('a')!.effects.shield).toBe(0);
-    expect(sim.player('b')!.status).toBe('racing'); // the arrow broke on a, never reached b
-    expect(sim.projectiles.some(p => p.id === arrow.id)).toBe(false);
+    const fires: number[] = [];
+    let arrow: (typeof sim.projectiles)[number] | undefined;
+    for (let i = 0; i < 400 && sim.player('a')!.effects.shield > 0; i++) {
+      sim.step(new Map());
+      for (const e of sim.drainEvents()) if (e.type === 'fire' && e.src === cb.id) fires.push(e.t);
+      arrow ??= sim.projectiles.find(p => p.src === cb.id);
+      if (arrow && i % 5 === 0) { expect(Math.hypot(arrow.vx, arrow.vy)).toBeCloseTo(HAZARD.arrowSpeed, 6); expect(arrow.vy).toBe(0); }
+    }
+    expect(fires[0]).toBe(60); // first shot one second after GO
+    expect(HAZARD.arrowSpeed).toBeLessThanOrEqual(620 / 2.9); // roughly a third of the old 620 px/s
+    expect(sim.player('a')!.status).toBe('racing'); // the shield absorbed the first arrow
+    expect(sim.player('b')!.status).toBe('racing'); // the arrow broke on a and never reached b
+    expect(arrow && sim.projectiles.some(p => p.id === arrow!.id)).toBe(false);
+    // cadence: exactly one shot every 60 ticks
+    const w2 = lab();
+    put(w2, 'crossbow', 8, 15, 0, 'o');
+    const sim2 = new RaceSim(w2, ['o'], { roundKey: 'k2', maxTicks: 2000 });
+    place(sim2, 'o', 3);
+    const ticks: number[] = [];
+    for (let i = 0; i < 400; i++) { sim2.step(new Map()); for (const e of sim2.drainEvents()) if (e.type === 'fire') ticks.push(e.t); }
+    expect(ticks.slice(0, 6)).toEqual([60, 120, 180, 240, 300, 360]);
   });
 
   it('fast projectiles cannot tunnel through a one-cell plank', () => {
@@ -158,7 +169,7 @@ describe('coins', () => {
   it('award nothing on pickup, drop at the death spot, can be banked by someone else, and reset next round', () => {
     const w = lab();
     const coin = put(w, 'coin', 10, 15);
-    put(w, 'spikes', 13, 15, 0, 'trapper');
+    put(w, 'spiky_oval', 13, 15, 0, 'trapper');
     const sim = new RaceSim(w, ['a', 'b', 'trapper'], { roundKey: 'k', maxTicks: 4000 });
     place(sim, 'a', 9); place(sim, 'b', 3); place(sim, 'trapper', 2);
     let ev = steps(sim, 60, { a: IN_RIGHT });
@@ -170,7 +181,7 @@ describe('coins', () => {
     expect(Math.abs(c.x - death.x)).toBeLessThan(1e-6); // exactly where the carrier died, not snapped
     expect(c.ox).toBe(10 * CELL + CELL / 2); // origin untouched
     // b walks to the coin and banks it at the flag
-    const bb = sim.player("b")!; bb.body.x = c.x - PHYS.bodyW / 2; bb.body.y = c.y - 5 - PHYS.bodyH; // touch the coin from above, clear of the spikes
+    const bb = sim.player("b")!; bb.body.x = c.x - PHYS.bodyW - 10; bb.body.y = c.y - PHYS.bodyH / 2 - 14; // touch the coin's edge from the open side, clear of the oval
     ev = steps(sim, 2);
     expect(c.carrier).toBe('b');
     bb.body.x = w.finishPx.x + 4; bb.body.y = w.finishPx.y + 4;
@@ -178,7 +189,7 @@ describe('coins', () => {
     const all = [...ev];
     const rows = scoreRound(['a', 'b', 'trapper'], true, [...all, ...sim.events, death], new Map(sim.players.map(p => [p.id, p.status])), new Map());
     const rb = rows.find(r => r.pid === 'b')!;
-    expect(rb.coins).toBe(1);
+    expect(rb.coins).toBe(SCORING.coin);
     expect(rows.find(r => r.pid === 'a')!.coins).toBe(0);
     // next round: a fresh race returns the coin to its origin
     const next = new RaceSim(w, ['a'], { roundKey: 'k2', maxTicks: 100 });
@@ -207,35 +218,47 @@ describe('coins', () => {
 describe('scoring', () => {
   const ev = (list: [string, string, number][]) => list.map(([type, pid, tick], i) => (type === 'finish' ? { id: `r:finish:${pid}`, t: tick, type: 'finish', pid, tick } : { id: `r:death:${pid}:${i}`, t: tick, type: 'death', pid, credit: null, cause: 'fall', src: null, x: 0, y: 0 })) as RaceEvent[];
   const st = (m: Record<string, string>) => new Map(Object.entries(m)) as Map<string, 'finished'>;
-  it('matches the examples: first + finish, sole finisher gets 3', () => {
+  it('uses exactly 0.2 / 0.4 / 0.6 for trap kills, first finisher and sole finisher, with the old finish and coin values', () => {
+    expect([SCORING.trapElim, SCORING.firstFinisher, SCORING.soleFinisher]).toEqual([2, 4, 6]); // tenths
+    expect([SCORING.finish, SCORING.coin]).toEqual([10, 10]); // unchanged: 1 point each
+    expect([fmtPts(2), fmtPts(4), fmtPts(6), fmtPts(10), fmtPts(14), fmtPts(150)]).toEqual(['0.2', '0.4', '0.6', '1', '1.4', '15']);
     const r = scoreRound(['alex', 'bailey'], true, ev([['finish', 'alex', 100], ['finish', 'bailey', 200]]), st({ alex: 'finished', bailey: 'finished' }), new Map());
-    expect(r.find(x => x.pid === 'alex')!.total).toBe(2);
-    expect(r.find(x => x.pid === 'bailey')!.total).toBe(1);
+    expect(r.find(x => x.pid === 'alex')!.total).toBe(14); // finish 1 + first 0.4
+    expect(r.find(x => x.pid === 'bailey')!.total).toBe(10);
     const s = scoreRound(['alex', 'bailey'], true, ev([['finish', 'alex', 100]]), st({ alex: 'finished', bailey: 'dead' }), new Map());
-    expect(s.find(x => x.pid === 'alex')!.total).toBe(3);
+    expect(s.find(x => x.pid === 'alex')!.total).toBe(10 + 4 + 6); // finish + first + sole = 2
+  });
+  it('does not grant the sole-finisher bonus while somebody else can still finish', () => {
+    const early = scoreRound(['a', 'b'], true, ev([['finish', 'a', 100]]), st({ a: 'finished', b: 'racing' }), new Map(), false);
+    expect(early.find(x => x.pid === 'a')!.sole).toBe(0);
+    expect(early.find(x => x.pid === 'a')!.total).toBe(14);
+    const known = scoreRound(['a', 'b'], true, ev([['finish', 'a', 100]]), st({ a: 'finished', b: 'dead' }), new Map(), true);
+    expect(known.find(x => x.pid === 'a')!.sole).toBe(6);
   });
   it('gives tied first finishers the bonus each and nobody finish points when nobody finishes', () => {
     const r = scoreRound(['a', 'b', 'c'], true, ev([['finish', 'a', 100], ['finish', 'b', 100], ['finish', 'c', 140]]), st({}), new Map());
-    expect(r.map(x => x.first)).toEqual([1, 1, 0]);
+    expect(r.map(x => x.first)).toEqual([4, 4, 0]);
     const z = scoreRound(['a', 'b'], true, [], st({}), new Map());
     expect(z.every(x => x.total === 0)).toBe(true);
   });
   it('solo practice awards no first, sole or trap bonuses', () => {
     const r = scoreRound(['me'], false, ev([['finish', 'me', 50]]), st({ me: 'finished' }), new Map());
-    expect(r[0]).toMatchObject({ base: 1, first: 0, sole: 0, trap: 0 });
+    expect(r[0]).toMatchObject({ base: 10, first: 0, sole: 0, trap: 0 });
   });
-  it('credits trap eliminations once per victim, caps at 3, never for self or the map', () => {
-    const deaths: RaceEvent[] = ['b', 'c', 'd', 'e'].map(v => ({ id: `r:death:${v}`, t: 1, type: 'death', pid: v, credit: 'a', cause: 'spikes', src: 'o1', x: 0, y: 0 }));
-    deaths.push({ id: 'r:death:a', t: 2, type: 'death', pid: 'a', credit: null, cause: 'spikes', src: 'o1', x: 0, y: 0 });
+  it('credits trap eliminations once per victim, caps at 3 eliminations, never for self or the map', () => {
+    const deaths: RaceEvent[] = ['b', 'c', 'd', 'e'].map(v => ({ id: `r:death:${v}`, t: 1, type: 'death', pid: v, credit: 'a', cause: 'oval', src: 'o1', x: 0, y: 0 }));
+    deaths.push({ id: 'r:death:a', t: 2, type: 'death', pid: 'a', credit: null, cause: 'oval', src: 'o1', x: 0, y: 0 });
     deaths.push(deaths[0]); // duplicate callback
     const r = scoreRound(['a', 'b', 'c', 'd', 'e'], true, deaths, st({}), new Map());
-    expect(r.find(x => x.pid === 'a')!.trap).toBe(3);
+    expect(r.find(x => x.pid === 'a')!.trap).toBe(3 * SCORING.trapElim); // three eliminations at 0.2 = 0.6, the old cap of three kills
     expect(r.filter(x => x.pid !== 'a').every(x => x.trap === 0)).toBe(true);
+    const two = scoreRound(['a', 'b', 'c'], true, deaths.slice(0, 2), st({}), new Map());
+    expect(two.find(x => x.pid === 'a')!.trap).toBe(4);
   });
   it('breaks ties by finishes, then lower total finish time, else shared victory', () => {
-    const t = new Map([['a', { score: 5, finishes: 3, finishTime: 40 }], ['b', { score: 5, finishes: 3, finishTime: 38 }], ['c', { score: 5, finishes: 2, finishTime: 10 }]]);
+    const t = new Map([['a', { score: 50, finishes: 3, finishTime: 40 }], ['b', { score: 50, finishes: 3, finishTime: 38 }], ['c', { score: 50, finishes: 2, finishTime: 10 }]]);
     expect(rankMatch(['a', 'b', 'c'], t).winners).toEqual(['b']);
-    const u = new Map([['a', { score: 4, finishes: 2, finishTime: 30 }], ['b', { score: 4, finishes: 2, finishTime: 30 }]]);
+    const u = new Map([['a', { score: 40, finishes: 2, finishTime: 30 }], ['b', { score: 40, finishes: 2, finishTime: 30 }]]);
     expect(rankMatch(['a', 'b'], u).winners.sort()).toEqual(['a', 'b']);
   });
 });
@@ -244,8 +267,8 @@ describe('deterministic race rules', () => {
   it('a lethal contact on the same tick as reaching the flag wins (eliminated, no finish)', () => {
     const w = lab();
     // inject a spike strip touching the finish (placement rules would refuse this; it tests the tie rule only)
-    const req = { item: 'spikes', x: 35, y: 15, rot: 0 as const, variant: 0 };
-    const o = makeObject(w, req, { ok: true, cells: [[35, 15], [36, 15]], support: null }, 'z', 1);
+    const req = { item: 'spiky_oval', x: 35, y: 15, rot: 0 as const, variant: 0 };
+    const o = makeObject(w, req, { ok: true, cells: [[35, 15], [36, 15], [37, 15]], support: null }, 'z', 1);
     w.objects.set(o.id, o); w.rebuild();
     const sim = new RaceSim(w, ['a', 'z'], { roundKey: 'k', maxTicks: 100 });
     place(sim, 'z', 3);

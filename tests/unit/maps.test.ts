@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CELL } from '../../shared/config';
 import { MAP_LIST, getMap, selectableMap } from '../../shared/maps';
 import { baseNav, NavGraph, type NavEdge } from '../../shared/nav';
-import { checkPlacement, makeObject, applyPlacement, validatePlacement, progressOf } from '../../shared/placement';
+import { assessPlacement, checkPlacement, makeObject, applyPlacement, progressOf } from '../../shared/placement';
 import { RaceSim } from '../../shared/race';
 import { World } from '../../shared/world';
 import { BotRacer } from '../../server/bots';
@@ -123,7 +123,7 @@ describe('the great oak', () => {
       const w = new World('oak');
       let nav = NavGraph.fromBase(baseNav('oak'), w);
       for (const [item, x, y, rot] of items) {
-        const { check, nav: g } = validatePlacement(w, { item, x, y, rot, variant: 0 }, nav);
+        const { check, nav: g } = assessPlacement(w, { item, x, y, rot, variant: 0 }, nav);
         expect(check.ok, `${item}: ${check.reason}`).toBe(true);
         applyPlacement(w, makeObject(w, { item, x, y, rot, variant: 0 }, check, 'p', 1));
         nav = g!;
@@ -137,19 +137,19 @@ describe('the great oak', () => {
     expect(opens([['block_2x3', 37, 22, 0], ['block_2x2', 38, 20, 0]])).toBe(true);
   }, 60000);
 
-  it('accepts useful partial building but rejects a piece that cuts players off from their furthest progress', () => {
+  it('accepts partial building and also a piece that cuts players off (advisory only), while ordinary rules still apply', () => {
     const w = new World('oak');
     const nav = NavGraph.fromBase(baseNav('oak'), w);
     const before = progressOf(w, nav.reach(false).visited);
-    const partial = validatePlacement(w, { item: 'plank_3', x: 38, y: 22, rot: 1, variant: 0 }, nav);
+    const partial = assessPlacement(w, { item: 'plank_3', x: 38, y: 22, rot: 1, variant: 0 }, nav);
     expect(partial.check.ok).toBe(true);
-    expect(partial.check.warning).toMatch(/No full route/);
-    const cut = validatePlacement(w, { item: 'block_3x3', x: 26, y: 30, rot: 0, variant: 0 }, nav);
-    expect(cut.check.ok).toBe(false);
-    expect(cut.check.reason).toMatch(/cut players off/);
-    // bounds, overlap and spawn protection still apply on top of the staged check
-    expect(validatePlacement(w, { item: 'block_1x1', x: 3, y: 30, rot: 0, variant: 0 }, nav).check.reason).toMatch(/start safety zone/);
-    expect(validatePlacement(w, { item: 'block_1x1', x: 51, y: 25, rot: 0, variant: 0 }, nav).check.reason).toMatch(/terrain/);
+    expect(partial.cutsProgress).toBe(false);
+    const cut = assessPlacement(w, { item: 'block_3x3', x: 26, y: 30, rot: 0, variant: 0 }, nav);
+    expect(cut.check.ok).toBe(true); // legal even though it shuts players off
+    expect(cut.cutsProgress).toBe(true);
+    // bounds, overlap and spawn protection still apply
+    expect(checkPlacement(w, { item: 'block_1x1', x: 3, y: 30, rot: 0, variant: 0 }).reason).toMatch(/start safety zone/);
+    expect(checkPlacement(w, { item: 'block_1x1', x: 51, y: 25, rot: 0, variant: 0 }).reason).toMatch(/terrain/);
     expect(before.stage).toBe(1);
   }, 60000);
 });

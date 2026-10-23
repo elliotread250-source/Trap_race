@@ -140,14 +140,18 @@ describe('a full match with bots', () => {
   it('drafts, builds, races and scores every round and ends with a winner', () => {
     const { room, inbox } = mkRoom();
     const h = human(room, 'host');
-    room.rounds = 3;
+    room.target = 5;
     room.addBot('medium'); room.addBot('hard'); room.addBot('easy');
     room.startMatch();
     let guard = 0;
-    while (room.phase !== 'matchEnd' && guard++ < TICK_HZ * 60 * 12) room.tick();
+    while (room.phase !== 'matchEnd' && guard++ < TICK_HZ * 60 * 40) room.tick();
     expect(room.phase).toBe('matchEnd');
     const m = room.match!;
-    expect(m.results.length).toBe(3);
+    expect(m.results.length).toBeGreaterThanOrEqual(1);
+    // the match ended the moment someone reached 5 points, and only then
+    const winners = m.matchResult!.winners;
+    for (const id of winners) expect(m.tally.get(id)!.score).toBeGreaterThanOrEqual(50);
+    for (const rows of m.results.slice(0, -1)) for (const r of rows) expect(r.matchTotal).toBeLessThan(50);
     const msgs = inbox.get(h.id)!;
     expect(msgs.some(x => x.t === 'matchEnd')).toBe(true);
     // bots appear in results and at least one bot finished at least once
@@ -163,14 +167,14 @@ describe('large maps with six players', () => {
     const { room } = mkRoom();
     human(room, 'host'); // rooms with no connected human close themselves
     room.mapId = 'oak';
-    room.rounds = 4;
+    room.target = 15; // high enough that several rounds are played
     for (let i = 0; i < 5; i++) room.addBot(i % 3 === 0 ? 'hard' : 'medium');
     room.startMatch();
     const m = room.match!;
     // seed every draft with the two moving items so they accumulate across rounds
     let seededRound = 0, opened = -1, scoutRaces = 0;
     let guard = 0;
-    while (room.phase !== 'matchEnd' && guard++ < TICK_HZ * 60 * 20) {
+    while (m.results.length < 4 && room.phase !== 'matchEnd' && guard++ < TICK_HZ * 60 * 20) {
       if (m.phase === 'draft' && seededRound !== m.round) {
         seededRound = m.round;
         m.pool[0].item = 'shuttle'; m.pool[1].item = 'wheel';
@@ -183,8 +187,7 @@ describe('large maps with six players', () => {
       }
       room.tick();
     }
-    expect(room.phase).toBe('matchEnd');
-    expect(m.results.length).toBe(4);
+    expect(m.results.length).toBeGreaterThanOrEqual(4);
     expect(opened).toBeGreaterThan(0); // bots built the crossing
     expect(opened).toBeLessThanOrEqual(2);
     expect(m.results.flat().some(r => r.time !== null)).toBe(true);

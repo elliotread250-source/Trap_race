@@ -74,7 +74,10 @@ describe('network', () => {
     expect((await b.waitFor('error', m => m.code === 'host')).msg).toMatch(/host/);
     b.send({ t: 'ready', ready: true });
     await a.waitFor('room', m => m.room.members.some(x => x.id === wb.you && x.ready));
-    a.send({ t: 'host', a: 'rounds', rounds: 3 });
+    a.send({ t: 'host', a: 'target', target: 99 });
+    expect((await a.waitFor('error', m => m.code === 'host')).msg).toMatch(/whole number from 5 to 15/);
+    a.send({ t: 'host', a: 'target', target: 6 });
+    await b.waitFor('room', m => m.room.target === 6);
     a.send({ t: 'host', a: 'start' });
     const draft = await a.waitFor('draft');
     expect(draft.cards.length).toBeGreaterThanOrEqual(5);
