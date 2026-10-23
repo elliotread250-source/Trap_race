@@ -46,8 +46,8 @@ See README "Limitations".
 `npm test`, `npm run typecheck`, `npm run build`, `npm run e2e`.
 
 ## Deployment
-- Railway project "arcade", service `trap-race` (single replica, Dockerfile build, healthcheck `/healthz`), deploys from this repo's `claude/compassionate-ramanujan-hqs0jy` branch.
-- Game URL: https://trap-race-production.up.railway.app
+- Railway project "arcade", service `trap-race` (single replica, Dockerfile build, healthcheck `/healthz`), auto-deploys from this repo's `claude/compassionate-ramanujan-hqs0jy` branch. Development happens on `claude/new-session-y4o1st`, which is fast-forwarded onto it to release.
+- Game URL: https://trap-race-production.up.railway.app (unchanged, so the Open Arcade card needs no change)
 - Open Arcade card: registry entry `trap-race` in `elliotread250-source/Blackjack` (`arcade/`, branch `claude/awesome-heisenberg-qcknm3`, which the hub service deploys).
-- Hub rollback point before this release: deployment `1b5b5245-17fe-4857-9956-fc4eed04cea8` (commit `d73ded5`).
-- Not verified from the build environment: live browser play against production. The build sandbox's network policy blocks `*.up.railway.app`. Railway reported the deployment healthy (its `/healthz` check passed). Manual check: open the arcade, find Trap Race, Play, Create Room in one browser and Join by code in another, then run one round; also try Play Against AI.
+- Oct 2026 map and moving-platform release: commit `1d40176`, deployment `82d68d44-f2ee-463c-b4b3-ae829f53c7b0`, status SUCCESS; runtime log "route graphs ready for 6 maps in 1020 ms". Rollback point: deployment `4e0431f1-7035-4673-bb3d-3711cc048804` (commit `ac1d602`).
+- Not verified from the build environment: live browser play against production. The sandbox's network policy blocks `*.up.railway.app` (proxy 403), so the new maps, the two item cards and two-client play were verified only against a local production build (`tests/e2e/movers.mjs`, `tests/e2e/run.mjs`). Manual check: open the arcade, launch Trap Race, Create Room, pick The Great Oak or Under the Mountain, join from a second browser, look for the Shuttle Block and Ferris Wheel cards, run a round; then launch one other arcade game.
