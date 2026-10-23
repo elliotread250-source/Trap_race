@@ -6,9 +6,24 @@ import { Room } from '../../server/room';
 
 export type ConnStatus = 'connecting' | 'online' | 'lost' | 'local' | 'closed';
 
+/** Round-trip samples from application pings echoed by the game server over the gameplay socket (monotonic clock). */
+export class RttStats {
+  samples: number[] = [];
+  timeouts = 0;
+  region = '';
+  add(ms: number) { this.samples.push(ms); if (this.samples.length > 60) this.samples.shift(); }
+  private sorted() { return [...this.samples].sort((a, b) => a - b); }
+  get median() { const s = this.sorted(); return s.length ? s[Math.floor(s.length / 2)] : 0; }
+  get p95() { const s = this.sorted(); return s.length ? s[Math.min(s.length - 1, Math.floor(s.length * 0.95))] : 0; }
+  /** mean absolute difference between consecutive samples */
+  get jitter() { const a = this.samples; let j = 0; for (let i = 1; i < a.length; i++) j += Math.abs(a[i] - a[i - 1]); return a.length > 1 ? j / (a.length - 1) : 0; }
+}
+
 export interface Transport {
   kind: 'ws' | 'local';
+  /** latest full round trip in ms (never halved, never smoothed); see stats for median, p95 and jitter */
   rtt: number;
+  stats: RttStats;
   send(msg: ClientMsg): void;
   close(): void;
   onMessage: (m: ServerMsg) => void;
@@ -18,6 +33,8 @@ export interface Transport {
 export class WsTransport implements Transport {
   kind = 'ws' as const;
   rtt = 0;
+  stats = new RttStats();
+  private outstanding = new Map<number, number>();
   onMessage: (m: ServerMsg) => void = () => {};
   onStatus: (s: ConnStatus) => void = () => {};
   private ws: WebSocket | null = null;
@@ -54,12 +71,21 @@ export class WsTransport implements Transport {
       const q = this.queue; this.queue = [];
       for (const m of q) this.rawSend(m);
       if (this.pingTimer) clearInterval(this.pingTimer);
-      this.pingTimer = window.setInterval(() => this.rawSend({ t: 'ping', c: performance.now() }), 2000);
+      this.pingTimer = window.setInterval(() => {
+        const c = performance.now();
+        // a ping unanswered after 5 s counts as a timeout (a TCP socket hides real packet loss, so this is not a loss rate)
+        for (const [k, at] of this.outstanding) if (c - at > 5000) { this.outstanding.delete(k); this.stats.timeouts++; }
+        this.outstanding.set(c, c);
+        this.rawSend({ t: 'ping', c });
+      }, 1000);
     };
     ws.onmessage = ev => {
       let m: ServerMsg;
       try { m = JSON.parse(String(ev.data)); } catch { return; }
-      const deliver = () => { if (m.t === 'pong') this.rtt = performance.now() - m.c; this.onMessage(m); };
+      const deliver = () => {
+        if (m.t === 'pong' && this.outstanding.delete(m.c)) { this.rtt = performance.now() - m.c; this.stats.add(this.rtt); if (m.r) this.stats.region = m.r; }
+        this.onMessage(m);
+      };
       if (this.lag) setTimeout(deliver, this.lag); else deliver();
     };
     ws.onclose = () => {
@@ -95,6 +121,7 @@ export class WsTransport implements Transport {
 export class LocalTransport implements Transport {
   kind = 'local' as const;
   rtt = 0;
+  stats = new RttStats();
   onMessage: (m: ServerMsg) => void = () => {};
   onStatus: (s: ConnStatus) => void = () => {};
   room: Room;

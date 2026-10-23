@@ -60,7 +60,7 @@ export type ServerMsg =
   | { t: 'matchEnd'; order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number }
   | { t: 'votes'; votes: string[] }
   | { t: 'notice'; msg: string }
-  | { t: 'pong'; c: number; s: number };
+  | { t: 'pong'; c: number; s: number; r?: string };
 
 const DIFFS = new Set(['easy', 'medium', 'hard']);
 const str = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;

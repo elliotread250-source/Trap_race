@@ -62,6 +62,11 @@ try {
   await guest.page.click('button:has-text("Join")');
   await guest.page.waitForSelector('.player-row >> nth=1', { timeout: 10000 });
   await guest.page.click('text=Ready up');
+  // score to win: host picks 6, the guest sees it, and the server rejects nonsense
+  await host.page.selectOption('select[aria-label="Score to win"]', '6');
+  await guest.page.waitForTimeout(500);
+  const tgt = await guest.page.evaluate(() => window.__trap.game.room.target);
+  check('host sets the score to win and the guest sees it', tgt === 6, String(tgt));
   await host.page.waitForTimeout(400);
   await host.page.click('text=Start match');
   await Promise.all([waitPhase(host, 'draft'), waitPhase(guest, 'draft')]);
@@ -73,15 +78,20 @@ try {
   await guest.page.waitForTimeout(300);
   await guest.page.click('.icard:has-text("Ferris Wheel")');
   await Promise.all([waitPhase(host, 'build'), waitPhase(guest, 'build')]);
-  const blocked = await host.page.evaluate(() => { const g = window.__trap.game; g.setCursor(40, 29); return g.check?.reason ?? 'ok'; });
-  check('a shuttle lane into rock is rejected in the preview', /terrain/.test(blocked), blocked);
+  const blocked = await host.page.evaluate(() => {
+    const g = window.__trap.game, w = g.world, b = w.map.build;
+    // a spot where both start cells are solid rock: wholly inside a wall is the one thing a platform may not do
+    for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w - 1; x++) if (w.terrainAt(x, y) === 1 && w.terrainAt(x + 1, y) === 1) { g.setCursor(x, y); if (/completely inside/.test(g.check?.reason ?? '')) return g.check.reason; }
+    return 'no rejection found';
+  });
+  check('a shuttle wholly inside rock is rejected in the preview', /completely inside a wall/.test(blocked), blocked);
   const ph = await placeAt(host, 46, 29, 0), pg = await placeAt(guest, 76, 18, 0);
   check('host placed a shuttle and guest a ferris wheel through the server', ph === 'ok' && pg === 'ok', `${ph} / ${pg}`);
   await host.page.waitForTimeout(500);
   const [oh, og] = await Promise.all([movingObjs(host), movingObjs(guest)]);
   check('both clients hold identical moving-platform definitions (anchor, rotation, motion)', oh === og && JSON.parse(oh).length === 2 && JSON.parse(oh).every(o => o.mv), oh.slice(0, 160));
-  const laneClash = await host.page.evaluate(() => { const g = window.__trap.game; return g.world.reservedAt(48, 29) !== '' && g.world.reservedAt(79, 18) !== ''; });
-  check('swept lanes are reserved on the client too', laneClash);
+  const laneFree = await host.page.evaluate(() => { const g = window.__trap.game; return typeof g.world.reservedAt !== 'function'; });
+  check('nothing reserves a platform path any more (blocks may go in it)', laneFree);
   await Promise.all([waitPhase(host, 'race', 40000), waitPhase(guest, 'race', 40000)]);
   await host.page.waitForTimeout(2500);
   const [ah, ag] = await Promise.all([moverPoses(host), moverPoses(guest)]);
@@ -114,8 +124,8 @@ try {
   const cg = await placeFirstValid(guest);
   check('bomb detonated and coin placed', bh === 'ok' && cg === true, `${bh} / ${cg}`);
   await host.page.waitForTimeout(600);
-  const gone = await Promise.all([host, guest].map(p => p.page.evaluate(() => { const g = window.__trap.game; return { wheel: [...g.world.objects.values()].some(o => o.item === 'wheel'), lanes: g.world.reserved.filter(r => r).length, kin: g.world.kinematic.length }; })));
-  check('the wheel, its reserved lane and its bodies are gone on both clients; the shuttle stays', gone.every(x => !x.wheel && x.kin === 1 && x.lanes === 5), JSON.stringify(gone));
+  const gone = await Promise.all([host, guest].map(p => p.page.evaluate(() => { const g = window.__trap.game; return { wheel: [...g.world.objects.values()].some(o => o.item === 'wheel'), kin: g.world.kinematic.length }; })));
+  check('the wheel and its bodies are gone on both clients; the shuttle stays', gone.every(x => !x.wheel && x.kin === 1), JSON.stringify(gone));
   await Promise.all([waitPhase(host, 'race', 40000), waitPhase(guest, 'race', 40000)]);
   await host.page.waitForTimeout(800);
   const nm = await Promise.all([host, guest].map(p => p.page.evaluate(() => window.__trap.game.race.movers.length)));

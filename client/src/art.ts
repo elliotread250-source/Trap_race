@@ -444,13 +444,13 @@ export function drawSpikyOval(ctx: CanvasRenderingContext2D, cells: [number, num
   for (const [cx, cy] of cells) { x0 = Math.min(x0, cx); y0 = Math.min(y0, cy); x1 = Math.max(x1, cx); y1 = Math.max(y1, cy); }
   const w = (x1 - x0 + 1) * C, h = (y1 - y0 + 1) * C;
   const cx = ax + x0 * C + w / 2, cy = ay + y0 * C + h / 2;
-  const rx = w / 2 - 1, ry = h / 2 - 1, sp = 9; // spike length
+  const rx = w / 2 - 1, ry = h / 2 - 1, sp = 11; // spike length
   const n = Math.max(14, Math.round((w + h) / 11));
   ctx.save();
   ctx.fillStyle = '#e4e8f2'; ctx.strokeStyle = '#4c5168'; ctx.lineWidth = 1.2;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2, da = Math.PI / n * 0.8;
-    const bx = (aa: number) => cx + Math.cos(aa) * (rx - sp * 0.6), by = (aa: number) => cy + Math.sin(aa) * (ry - sp * 0.6);
+    const bx = (aa: number) => cx + Math.cos(aa) * (rx - sp * 1.05), by = (aa: number) => cy + Math.sin(aa) * (ry - sp * 1.05);
     // outward normal of the ellipse at angle a
     let nx = Math.cos(a) / rx, ny = Math.sin(a) / ry; const nl = Math.hypot(nx, ny); nx /= nl; ny /= nl;
     ctx.beginPath(); ctx.moveTo(bx(a - da), by(a - da)); ctx.lineTo(cx + Math.cos(a) * (rx - 1) + nx * 0, cy + Math.sin(a) * (ry - 1) + ny * 0); ctx.lineTo(bx(a + da), by(a + da)); ctx.closePath(); ctx.fill(); ctx.stroke();
@@ -458,7 +458,7 @@ export function drawSpikyOval(ctx: CanvasRenderingContext2D, cells: [number, num
   const g = ctx.createLinearGradient(cx, cy - ry, cx, cy + ry);
   g.addColorStop(0, '#7b829e'); g.addColorStop(1, '#2f3347');
   ctx.fillStyle = g; ctx.strokeStyle = '#1b1e2c'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.ellipse(cx, cy, rx - sp * 0.7, ry - sp * 0.7, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(cx, cy, rx - sp, ry - sp, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.beginPath(); ctx.ellipse(cx - rx * 0.15, cy - ry * 0.25, (rx - sp) * 0.5, Math.max(2, (ry - sp) * 0.25), 0, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }

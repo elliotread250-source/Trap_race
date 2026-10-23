@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { NET, PROTOCOL_VERSION, TICK_HZ, TIMERS, type Difficulty } from '../shared/config';
 import { MAP_LIST, MAPS, selectableMap } from '../shared/maps';
@@ -16,6 +17,15 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const here = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = resolve(process.env.STATIC_DIR ?? join(here, '../client'));
 const STARTED = Date.now();
+/** Railway sets this to the region the replica runs in; shown in /healthz and pong so players can report where they connected. */
+const REGION = process.env.RAILWAY_REPLICA_REGION ?? process.env.RAILWAY_REGION ?? 'local';
+
+// ---------------- server performance: event-loop delay and simulation cost, reported by /healthz
+const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+loopDelay.enable();
+const tickMs: number[] = []; // wall time of each 60 Hz step across all rooms, last ~10 s
+let sentBytes = 0, sentMsgs = 0;
+function pct(a: number[], p: number) { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; }
 
 // test hooks: shorter phases for automated browser runs (unset in production)
 for (const [env, key] of [['DRAFT_MS', 'draftMs'], ['BUILD_MS', 'buildMs'], ['RACE_MS', 'raceMs'], ['RESULTS_MS', 'resultsMs']] as const) {
@@ -39,6 +49,7 @@ function deliverFor(code: string) {
     if (!c || c.ws.readyState !== c.ws.OPEN) return;
     let s = encoded.get(msg);
     if (!s) { s = JSON.stringify(msg); encoded.set(msg, s); }
+    sentBytes += s.length; sentMsgs++;
     c.ws.send(s);
   };
 }
@@ -80,7 +91,7 @@ function onMessage(c: Conn, data: string) {
   try { raw = JSON.parse(data); } catch { return; }
   const msg = parseClientMsg(raw);
   if (!msg) return;
-  if (msg.t === 'ping') { send(c, { t: 'pong', c: msg.c, s: now }); return; }
+  if (msg.t === 'ping') { send(c, { t: 'pong', c: msg.c, s: now, r: REGION }); return; } // answered at once, never queued behind a snapshot
   if (!c.hello) {
     if (msg.t !== 'hello') return;
     if (msg.v !== PROTOCOL_VERSION) { send(c, { t: 'error', code: 'version', msg: 'Trap Race was updated. Refresh the page to get the new version.' }); return; }
@@ -200,7 +211,15 @@ const server = createServer((req, res) => {
     let players = 0;
     for (const r of rooms.values()) players += r.members.filter(m => !m.bot && m.connected).length;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ ok: true, game: 'trap-race', version: PROTOCOL_VERSION, rooms: rooms.size, players, uptimeS: Math.round((Date.now() - STARTED) / 1000) }));
+    const up = (Date.now() - STARTED) / 1000;
+    res.end(JSON.stringify({
+      ok: true, game: 'trap-race', version: PROTOCOL_VERSION, rooms: rooms.size, players, uptimeS: Math.round(up), region: REGION,
+      perf: {
+        tickMsP50: +pct(tickMs, 0.5).toFixed(3), tickMsP95: +pct(tickMs, 0.95).toFixed(3), tickMsMax: +pct(tickMs, 1).toFixed(3),
+        loopDelayMsP50: +(loopDelay.percentile(50) / 1e6).toFixed(2), loopDelayMsP99: +(loopDelay.percentile(99) / 1e6).toFixed(2), loopDelayMsMax: +(loopDelay.max / 1e6).toFixed(2),
+        sentKBps: +(sentBytes / 1024 / Math.max(1, up)).toFixed(1), sentMsgs,
+      },
+    }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return; }
@@ -210,6 +229,7 @@ const server = createServer((req, res) => {
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean);
 const wss = new WebSocketServer({
   server, path: '/ws', maxPayload: NET.maxPayloadBytes,
+  perMessageDeflate: false, // compression adds CPU and latency to every 20 Hz snapshot; payloads are small
   verifyClient: (info: { origin: string; req: IncomingMessage }) => {
     const origin = info.origin;
     if (!origin) return true; // non-browser clients (tests)
@@ -259,7 +279,9 @@ setInterval(() => {
   last = now;
   let n = 0;
   while (acc >= STEP && n < 6) {
+    const t0 = performance.now();
     for (const r of rooms.values()) r.tick();
+    if (rooms.size) { tickMs.push(performance.now() - t0); if (tickMs.length > 600) tickMs.shift(); }
     acc -= STEP; n++;
   }
   if (n === 6) acc = 0; // fell far behind: drop time rather than spiral

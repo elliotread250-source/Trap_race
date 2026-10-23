@@ -30,8 +30,8 @@ type Screen = 'menu' | 'join' | 'ai' | 'practice' | 'howto' | 'skins' | 'setting
 const previews = new Set<{ canvas: HTMLCanvasElement; skin: number; color: string; state: 'idle' | 'run' | 'celebrate' | 'wallslide' }>();
 /** Extra build-bar guidance for the items whose rules are spatial rather than visible in their footprint. */
 function buildTip(kind: string, rotationNote: string): string {
-  if (kind === 'shuttle') return 'The shaded lane is reserved for its whole path; the dotted band above stays clear for riders. ' + rotationNote;
-  if (kind === 'wheel') return 'Shaded cells are every place a gondola passes, reserved; the open centre stays usable. ' + rotationNote;
+  if (kind === 'shuttle' || kind === 'moving') return 'Shaded cells show its whole path. It passes through walls and blocks, may start partly inside a wall (amber), and crushes anyone it pins. ' + rotationNote;
+  if (kind === 'wheel') return 'Green gondolas start in open space (one is enough), amber ones start inside blocks and orbit through them. The centre stays open. ' + rotationNote;
   if (kind === 'bomb') return 'Moving platforms freeze at their starting pose while you aim: hit a shuttle, any gondola or a wheel\'s pivot to remove the whole thing.';
   if (kind === 'wire' || kind === 'sniper') return rotationNote + ' Nothing can bolt onto moving platforms.';
   return rotationNote;
@@ -586,7 +586,7 @@ export class UI {
     const effects: [string, number, number][] = p ? [['Speed', p.effects.speed, POWER.speedDur], ['Jump', p.effects.jump, POWER.jumpDur], ['Shield', p.effects.shield, POWER.shieldDur]] : [];
     const slow = sim && sim.slowTicks > 0 ? sim.slowTicks / 60 : 0;
     const coins = sim ? sim.coins.filter(c => c.carrier === g.you && c.state === 'carried').length : 0;
-    const lk = JSON.stringify([effects.map(x => x[1] > 0 ? Math.ceil(x[1] * 4) : 0), Math.ceil(slow * 4), coins, g.status, Math.round(g.transport?.rtt ?? 0 / 20)]);
+    const lk = JSON.stringify([effects.map(x => x[1] > 0 ? Math.ceil(x[1] * 4) : 0), Math.ceil(slow * 4), coins, g.status, Math.round((g.transport?.stats.median ?? 0) / 5)]);
     if (e.left.dataset.k !== lk) {
       e.left.dataset.k = lk;
       const kids: Node[] = [];
@@ -594,7 +594,7 @@ export class UI {
       if (slow > 0) fx.push(h('div', { class: 'effect' }, `Traps slowed ${slow.toFixed(1)}s`));
       if (fx.length) kids.push(h('div', { class: 'effects' }, ...fx));
       if (coins) kids.push(h('div', { class: 'chip' }, `Carrying ${coins} coin${coins > 1 ? 's' : ''} · bank at the flag`));
-      const conn = g.status === 'online' ? `● ${Math.round(g.transport?.rtt ?? 0)} ms` : g.status === 'local' ? '● Practice (local)' : '● Connection lost: reconnecting…';
+      const conn = g.status === 'online' ? `● ${Math.round(g.transport?.stats.median || g.transport?.rtt || 0)} ms ping` : g.status === 'local' ? '● Practice (local)' : '● Connection lost: reconnecting…';
       kids.push(h('div', { class: `conn ${g.status === 'online' || g.status === 'local' ? '' : 'bad'}` }, conn));
       e.left.replaceChildren(...kids);
     }
@@ -628,7 +628,7 @@ export class UI {
     e.spect.classList.toggle('hidden', !spectating);
     if (settings.devOverlay) {
       e.dev.classList.remove('hidden');
-      e.dev.textContent = `tick ${sim?.tick ?? 0} est ${g.serverTickNow().toFixed(0)}\nrtt ${Math.round(g.transport?.rtt ?? 0)}ms snaps/s ${g.stats.snapsPerSec}\ncorr ${g.stats.lastCorr.toFixed(1)}px pending ${g.pending.length}\nworld v${g.world?.version ?? 0} objs ${g.world?.objects.size ?? 0}`;
+      e.dev.textContent = `tick ${sim?.tick ?? 0} est ${g.serverTickNow().toFixed(0)}\nrtt last ${Math.round(g.transport?.rtt ?? 0)} med ${Math.round(g.transport?.stats.median ?? 0)} p95 ${Math.round(g.transport?.stats.p95 ?? 0)} jit ${(g.transport?.stats.jitter ?? 0).toFixed(1)}ms n=${g.transport?.stats.samples.length ?? 0} to=${g.transport?.stats.timeouts ?? 0} region ${g.transport?.stats.region || '?'}\nsnaps/s ${g.stats.snapsPerSec}\ncorr ${g.stats.lastCorr.toFixed(1)}px pending ${g.pending.length}\nworld v${g.world?.version ?? 0} objs ${g.world?.objects.size ?? 0}`;
     } else e.dev.classList.add('hidden');
   }
 
