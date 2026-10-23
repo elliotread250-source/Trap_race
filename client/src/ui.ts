@@ -6,7 +6,7 @@ import { World } from '../../shared/world';
 import { drawCardPreview, drawCharacter, PLAYER_COLORS, SKINS } from './art';
 import { applyVolumes, sfx, unlockAudio } from './audio';
 import type { GameClient } from './game';
-import { buildTouchControls, captureNextKey, touchSupported } from './input';
+import { buildTouchControls, captureNextKey, releaseTouch, touchSupported } from './input';
 import { Renderer } from './render';
 import { ACTIONS, DEFAULT_BINDS, keyLabel, saveSettings, settings } from './store';
 
@@ -63,7 +63,7 @@ export class UI {
   constructor(root: HTMLElement, g: GameClient) {
     this.root = root;
     this.g = g;
-    for (const name of ['screen', 'game', 'hud', 'overlay', 'toasts', 'pause']) {
+    for (const name of ['screen', 'game', 'hud', 'overlay', 'touch', 'toasts', 'rotate', 'pause']) {
       const el = h('div', { class: 'layer' });
       el.dataset.layer = name;
       root.appendChild(el);
@@ -89,18 +89,30 @@ export class UI {
     if (g.fatal) { this.once('screen', 'fatal', () => this.fatalScreen()); return; }
     if (this.screen !== 'game') {
       this.once('screen', `${this.screen}:${this.menuErr}:${settings.skin}`, () => this.menuScreen());
-      for (const l of ['game', 'hud', 'overlay', 'pause']) this.once(l, 'none', () => null);
+      for (const l of ['game', 'hud', 'overlay', 'pause', 'rotate']) this.once(l, 'none', () => null);
       this.touch(false);
       return;
     }
     this.once('screen', 'none', () => null);
     this.renderGame();
     this.renderToasts();
+    this.rotatePrompt();
   }
 
   private touch(on: boolean) {
-    if (on && !this.touchEl && touchSupported()) this.touchEl = buildTouchControls(this.layers.overlay);
-    if (!on && this.touchEl) { this.touchEl.remove(); this.touchEl = null; }
+    if (on && !this.touchEl && touchSupported()) this.touchEl = buildTouchControls(this.layers.touch);
+    if (!on && this.touchEl) { this.touchEl.remove(); this.touchEl = null; releaseTouch(); }
+  }
+
+  /** Phones play in landscape: the course is wide, so portrait gets a rotate prompt instead of a tiny map. */
+  private rotatePrompt() {
+    const portrait = window.innerHeight > window.innerWidth;
+    const need = this.screen === 'game' && touchSupported() && portrait && !!this.g.room && this.g.phase !== 'lobby' && this.g.phase !== 'matchEnd';
+    this.once('rotate', need ? 'rotate' : 'none', () => need ? h('div', { class: 'screen rotate' }, h('div', { class: 'card', style: 'text-align:center' },
+      h('div', { class: 'rotate-icon', 'aria-hidden': 'true' }),
+      h('h2', {}, 'Turn your phone sideways'),
+      h('p', {}, 'Trap Race plays in landscape. The match keeps running while you rotate.'),
+      h('button', { class: 'btn primary', onclick: () => void goFullscreen() }, 'Go fullscreen'))) : null);
   }
 
   // ======================================================== menus
@@ -148,7 +160,8 @@ export class UI {
           h('a', { class: 'btn', href: 'https://open-arcade.up.railway.app', 'data-hub': '', style: 'text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center' }, '← Back to Open Arcade'),
         ),
         h('div', { class: 'err' }, this.menuErr),
-        h('p', { class: 'small-note' }, 'Desktop browsers with keyboard or gamepad. Touch controls are available on phones and tablets (Settings → Touch controls) but desktop is the supported way to play.'),
+        h('p', { class: 'small-note' }, 'Plays on desktop (keyboard, mouse or gamepad) and on phones and tablets in landscape with on-screen controls.'),
+        touchSupported() && h('button', { class: 'btn block', style: 'margin-top:8px', onclick: () => void goFullscreen() }, 'Play fullscreen'),
       ));
   }
 
@@ -320,7 +333,7 @@ export class UI {
     // build bar
     const item = g.myItem();
     const buildKey = phase === 'build' ? JSON.stringify([item, g.placedThisRound, g.awaitingPlace, g.check?.ok, g.check?.reason, g.check?.warning, g.rot, g.variant, !!g.rehearsal, g.check?.wireLen, g.check?.targets?.length]) : 'none';
-    this.once('overlay', buildKey + (this.touchEl ? 't' : ''), () => (phase === 'build' ? this.buildBar() : null));
+    this.once('overlay', buildKey, () => (phase === 'build' ? this.buildBar() : null));
     const racing = phase === 'race' && !!g.pred;
     this.touch(racing || !!g.rehearsal);
     this.updateHud();
@@ -421,7 +434,9 @@ export class UI {
       h('button', { class: 'btn small', onclick: () => this.onZoom() }, 'Zoom'),
       h('button', { class: 'btn small', onclick: () => g.startRehearsal() }, 'Rehearse'),
       h('button', { class: 'btn primary', disabled: g.awaitingPlace, onclick: () => g.confirmPlace() }, def.kind === 'bomb' ? 'Detonate' : 'Place'),
-      h('div', { class: 'keys' }, 'Click / ', kb('confirm'), ' place · right-click / ', kb('rotate'), ' rotate', def.variants ? ' · ' : '', def.variants ? kb('flip') : '', def.variants ? ' flip' : '', ' · arrows move'),
+      touchSupported()
+        ? h('div', { class: 'keys' }, 'Drag on the course to aim, then tap ', def.kind === 'bomb' ? 'Detonate' : 'Place', '. Zoom for precision.')
+        : h('div', { class: 'keys' }, 'Click / ', kb('confirm'), ' place · right-click / ', kb('rotate'), ' rotate', def.variants ? ' · ' : '', def.variants ? kb('flip') : '', def.variants ? ' flip' : '', ' · arrows move'),
     );
   }
   onZoom: () => void = () => {};
@@ -515,8 +530,9 @@ export class UI {
     if (this.sig.get('hud') !== 'hud') {
       this.sig.set('hud', 'hud');
       const top = h('div', { class: 'hud-top' }, h('div', { class: 'chip', 'data-k': 'round' }), h('div', { class: 'chip timer', 'data-k': 'timer' }), h('div', { class: 'chip', 'data-k': 'score' }));
-      const els = { round: top.children[0] as HTMLElement, timer: top.children[1] as HTMLElement, score: top.children[2] as HTMLElement, standings: h('div', { class: 'standings' }), left: h('div', { class: 'hud-left' }), banner: h('div', { class: 'banner hidden' }), count: h('div', { class: 'big-count hidden' }), spect: h('div', { class: 'spectate hidden' }), dev: h('div', { class: 'dev hidden' }), menuBtn: h('button', { class: 'btn small', style: 'position:absolute;top:10px;left:50%;transform:translateX(220px);pointer-events:auto', onclick: () => this.setPaused(true), 'aria-label': 'Menu' }, '☰') };
-      this.layers.hud.replaceChildren(top, els.standings, els.left, els.banner, els.count, els.spect, els.dev, els.menuBtn);
+      const els = { round: top.children[0] as HTMLElement, timer: top.children[1] as HTMLElement, score: top.children[2] as HTMLElement, standings: h('div', { class: 'standings' }), left: h('div', { class: 'hud-left' }), banner: h('div', { class: 'banner hidden' }), count: h('div', { class: 'big-count hidden' }), spect: h('div', { class: 'spectate hidden' }), dev: h('div', { class: 'dev hidden' }), menuBtn: h('button', { class: 'btn small menu-btn', onclick: () => this.setPaused(true), 'aria-label': 'Menu' }, '☰') };
+      top.append(els.menuBtn);
+      this.layers.hud.replaceChildren(top, els.standings, els.left, els.banner, els.count, els.spect, els.dev);
       this.hudEls = els;
     }
     const e = this.hudEls!;
@@ -567,7 +583,7 @@ export class UI {
     else if (g.phase === 'race' && p && p.status === 'dead') banner = `Eliminated. Spectating until the next round.`;
     else if (g.phase === 'race' && p && p.status === 'finished') banner = `Finished! ${(p.finishTick / 60).toFixed(2)}s · spectating`;
     else if (g.phase === 'build' && g.rehearsal) banner = 'Rehearsal: practice run, nothing here counts.';
-    else if (g.phase === 'build') banner = `${g.room!.members.filter(m => !m.spectator).length} players building · ${Math.ceil(left)}s left`;
+    else if (g.phase === 'build' && window.innerHeight > 520) { const n = g.room!.members.filter(m => !m.spectator).length; banner = `${n} player${n === 1 ? '' : 's'} building · ${Math.ceil(left)}s left`; }
     e.banner.textContent = banner;
     e.banner.classList.toggle('hidden', !banner);
     e.banner.classList.toggle('danger', danger);
@@ -597,4 +613,14 @@ export class UI {
     const key = JSON.stringify(g.toasts.map(t => [t.msg, t.until]));
     this.once('toasts', key, () => h('div', { class: 'toasts' }, ...g.toasts.map(t => h('div', { class: `toast ${t.kind}` }, t.msg))));
   }
+}
+
+/** Fullscreen + landscape lock where the browser allows it (Android Chrome); iOS ignores both, which is fine. */
+export async function goFullscreen() {
+  try {
+    const el = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
+    if (!document.fullscreenElement) await (el.requestFullscreen?.({ navigationUI: 'hide' }) ?? el.webkitRequestFullscreen?.());
+    const o = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+    await o?.lock?.('landscape').catch(() => {});
+  } catch { /* not supported: carry on in the browser */ }
 }

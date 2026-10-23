@@ -23,10 +23,12 @@
 - Network: real server + two WebSocket clients: version and bad-code errors, exclusive claim, host-only actions, reconnect with the same identity, server-authoritative movement (`tests/unit/network.test.ts`)
 - Browser: two independent Chromium contexts create/join by invite link, draft, build, race, identical results, persistence, refresh restores identity, human vs bots, solo practice, arcade link, no page errors, ~60 fps headless (`tests/e2e/run.mjs`)
 
+- Mobile (Chromium emulation, `tests/e2e/mobile.mjs`): portrait rotate prompt; phone landscape and tablet: tap/drag aiming, Place button, on-screen controls with multi-touch run + jump
+
 ## Implemented, verified by hand or by benchmark only
+- Physical phones and tablets (only emulated so far; iOS Safari cannot lock orientation or go fullscreen, so it relies on the rotate prompt)
 - Bot completion rates (`scripts/bot-race.ts`, `scripts/bot-bench.ts`), numbers in README
 - Rendering of all items, skins, effects and the build preview (screenshots during development)
-- Touch controls (rendered and wired; not tested on a physical device)
 - Audio (synthesised; can't be heard in headless runs)
 - Gamepad input (code path only; no gamepad available)
 

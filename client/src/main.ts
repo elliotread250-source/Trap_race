@@ -110,32 +110,60 @@ initInput((a, ev) => {
 });
 
 // ------------------------------------------------ pointer for building (same grid as the server)
-let pointerType = 'mouse';
+// Mouse: the preview follows the pointer and a click places. Touch: tap a cell to aim there, or drag anywhere to
+// nudge the preview cell by cell (works when zoomed in and keeps your finger off the preview); the Place button confirms.
+let drag: { id: number; sx: number; sy: number; cx: number; cy: number; moved: boolean } | null = null;
+const building = () => game.phase === 'build' && !game.rehearsal && ui.screen === 'game';
 canvas.addEventListener('pointermove', e => {
-  pointerType = e.pointerType;
-  if (game.phase !== 'build' || game.rehearsal) return;
-  const c = renderer.screenToCell(e.clientX, e.clientY);
-  game.setCursor(c.x, c.y);
+  if (!building()) return;
+  if (e.pointerType === 'mouse') {
+    const c = renderer.screenToCell(e.clientX, e.clientY);
+    game.setCursor(c.x, c.y);
+    ui.render();
+    return;
+  }
+  if (!drag || drag.id !== e.pointerId) return;
+  const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+  if (!drag.moved && Math.hypot(dx, dy) < 10) return;
+  drag.moved = true;
+  const cellPx = CELL * renderer.cam.zoom;
+  game.setCursor(drag.cx + Math.round(dx / cellPx), drag.cy + Math.round(dy / cellPx));
   ui.render();
 });
 canvas.addEventListener('pointerdown', e => {
   unlockAudio(); startMusic();
-  if (game.phase !== 'build' || game.rehearsal || ui.screen !== 'game') return;
-  const c = renderer.screenToCell(e.clientX, e.clientY);
+  if (!building()) return;
+  if (e.pointerType !== 'mouse') {
+    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, cx: game.cursor.x, cy: game.cursor.y, moved: false };
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    return;
+  }
   if (e.button === 2) { game.rotate(1); sfx.click(); ui.render(); return; }
-  const same = c.x === game.cursor.x && c.y === game.cursor.y;
+  const c = renderer.screenToCell(e.clientX, e.clientY);
   game.setCursor(c.x, c.y);
-  // touch: first tap positions the preview, a second tap on the same cell confirms
-  if (e.pointerType !== 'mouse' && !same) { ui.render(); return; }
   game.confirmPlace();
 });
+const endDrag = (e: PointerEvent) => {
+  if (!drag || drag.id !== e.pointerId) return;
+  if (!drag.moved && building()) {
+    const c = renderer.screenToCell(e.clientX, e.clientY);
+    game.setCursor(c.x, c.y);
+    sfx.click();
+    ui.render();
+  }
+  drag = null;
+};
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', e => { if (drag?.id === e.pointerId) drag = null; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
   if (game.phase !== 'build') return;
   e.preventDefault();
   renderer.buildZoom = Math.max(1, Math.min(3, renderer.buildZoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
 }, { passive: false });
-void pointerType;
+// keep browsers from scrolling or zooming the page while playing
+document.addEventListener('touchmove', e => { if (ui.screen === 'game' && (e.target as HTMLElement).tagName === 'CANVAS') e.preventDefault(); }, { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
 
 // ------------------------------------------------ main loop
 let last = performance.now();
@@ -144,6 +172,10 @@ function loop(now: number) {
   last = now;
   setGameKeysActive(ui.screen === 'game' && (game.phase === 'race' || game.phase === 'build' || game.phase === 'countdown'));
   if (!ui.paused || !game.isPractice) game.update(dt * 1000);
+  const bar = game.phase === 'build' && !game.rehearsal ? document.querySelector('.buildbar') : null;
+  renderer.insetBottom = bar ? window.innerHeight - bar.getBoundingClientRect().top + 6 : 0;
+  const hudTop = document.querySelector('.hud-top');
+  renderer.insetTop = hudTop && game.phase === 'build' ? hudTop.getBoundingClientRect().bottom + 4 : 0;
   renderer.frame(game, dt);
   ui.render();
   animatePreviews(now / 1000);

@@ -78,29 +78,44 @@ export function inputBits(): number {
   return bits;
 }
 
+let sawTouch = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener('touchstart', () => { sawTouch = true; lastDevice = 'touch'; }, { passive: true, capture: true });
+  window.addEventListener('pointerdown', e => { if (e.pointerType === 'touch') { sawTouch = true; lastDevice = 'touch'; } }, { capture: true });
+}
+
+/** True on phones/tablets (or any device that has been touched); Settings can force it on or off. */
 export function touchSupported(): boolean {
   if (settings.touch === 'on') return true;
   if (settings.touch === 'off') return false;
-  return typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0) && matchMedia('(pointer: coarse)').matches;
+  if (sawTouch) return true;
+  if (typeof window === 'undefined') return false;
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  return coarse || (navigator.maxTouchPoints > 0 && !matchMedia('(pointer: fine)').matches);
 }
 
-/** On-screen controls for movement, jump and a separate sprint button. */
+/** On-screen controls: left/right pad, down, a big JUMP and a separate RUN (sprint) button. Multi-touch. */
 export function buildTouchControls(root: HTMLElement): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'touch';
-  const mk = (label: string, key: keyof typeof touch, style: string) => {
+  const mk = (label: string, key: keyof typeof touch, cls: string) => {
     const b = document.createElement('div');
-    b.className = 'tbtn'; b.textContent = label; b.setAttribute('style', style); b.setAttribute('role', 'button'); b.setAttribute('aria-label', key);
-    const on = (e: Event) => { e.preventDefault(); touch[key] = true; b.classList.add('on'); lastDevice = 'touch'; };
-    const off = (e: Event) => { e.preventDefault(); touch[key] = false; b.classList.remove('on'); };
-    b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+    b.className = `tbtn ${cls}`; b.textContent = label; b.setAttribute('role', 'button'); b.setAttribute('aria-label', key);
+    const active = new Set<number>();
+    const sync = () => { touch[key] = active.size > 0; b.classList.toggle('on', touch[key]); };
+    b.addEventListener('pointerdown', e => { e.preventDefault(); active.add(e.pointerId); try { b.setPointerCapture(e.pointerId); } catch { /* ignore */ } lastDevice = 'touch'; sync(); });
+    const end = (e: PointerEvent) => { e.preventDefault(); active.delete(e.pointerId); sync(); };
+    b.addEventListener('pointerup', end); b.addEventListener('pointercancel', end); b.addEventListener('lostpointercapture', end);
+    b.addEventListener('contextmenu', e => e.preventDefault());
     wrap.appendChild(b);
   };
-  mk('◀', 'left', 'left:16px');
-  mk('▶', 'right', 'left:104px');
-  mk('▼', 'down', 'left:60px;bottom:100px;width:56px;height:56px');
-  mk('JUMP', 'jump', 'right:16px;width:86px;height:86px');
-  mk('RUN', 'sprint', 'right:116px');
+  mk('◀', 'left', 't-left');
+  mk('▶', 'right', 't-right');
+  mk('▼', 'down', 't-down');
+  mk('RUN', 'sprint', 't-run');
+  mk('JUMP', 'jump', 't-jump');
   root.appendChild(wrap);
   return wrap;
 }
+
+export function releaseTouch() { for (const k of Object.keys(touch) as (keyof typeof touch)[]) touch[k] = false; }

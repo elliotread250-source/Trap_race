@@ -34,7 +34,7 @@ Useful tools: `npx tsx scripts/map-ascii.ts rooftop` prints a map with its reach
 | Practice: instant retry | T |
 | Menu | Esc (pauses only in solo practice) |
 
-Every binding can be changed in Settings. Gamepads work for movement (stick or d-pad, A jump, X/RB/RT sprint). Wall sliding is automatic when you fall against a wall; jump off it, steer back, and you can climb the same wall as many times as you like.
+Every binding can be changed in Settings. On phones and tablets: hold ◀/▶ to move, RUN to sprint, JUMP to jump (multi-touch, so you can run and jump together), ▼ + JUMP to drop through. Building on touch: tap a cell or drag anywhere to nudge the preview, Zoom for precision, then tap Place. Phones play in landscape; Play fullscreen on the menu hides the browser bars where supported. Gamepads work for movement (stick or d-pad, A jump, X/RB/RT sprint). Wall sliding is automatic when you fall against a wall; jump off it, steer back, and you can climb the same wall as many times as you like.
 
 ## Match rules
 
@@ -93,7 +93,7 @@ Server-side bots draft, build and race through the same code paths as humans. Th
 
 Networking: clients send sequenced input bits, never positions, deaths, finishes or scores. The server simulates at 60 Hz and sends snapshots at 20 Hz with the last processed input. The client predicts only its own movement with the shared physics, replays unacknowledged inputs on each snapshot, smooths small corrections, and interpolates everyone else about 100 ms behind. Messages are schema-checked, capped at 8 KB and rate limited. Reconnect tokens are random 144-bit values; a room code alone never grants an identity or host rights.
 
-**Limitations.** Rooms live in memory in one process. A redeploy or restart ends every active room, and the service must run as a single replica, since there's no cross-instance room coordination. Placement validation runs on the server's main thread (about 150–250 ms typical, up to ~600 ms on a crowded course), so very busy servers will see brief hitches during build phases. Touch controls exist but desktop with keyboard or gamepad is the supported way to play. Moving platforms are treated as standing still at their start by the route check.
+**Limitations.** Rooms live in memory in one process. A redeploy or restart ends every active room, and the service must run as a single replica, since there's no cross-instance room coordination. Placement validation runs on the server's main thread (about 150–250 ms typical, up to ~600 ms on a crowded course), so very busy servers will see brief hitches during build phases. On phones and tablets the game plays in landscape with on-screen controls (verified in Chromium phone and tablet emulation with multi-touch, not yet on physical devices); portrait shows a rotate prompt. Moving platforms are treated as standing still at their start by the route check.
 
 ## Credits
 

@@ -26,6 +26,8 @@ export class Renderer {
   readonly ctx: CanvasRenderingContext2D;
   cam: Camera = { x: 0, y: 0, zoom: 1 };
   buildZoom = 1;
+  insetTop = 0;
+  insetBottom = 0;
   dpr = 1;
   private terrainCache: { key: string; canvas: HTMLCanvasElement } | null = null;
   private particles: Particle[] = [];
@@ -117,13 +119,16 @@ export class Renderer {
     const cam = this.cam;
     const sim = g.rehearsal?.sim ?? g.race;
     let tx = mw / 2, ty = mh / 2, tz: number;
-    const fit = Math.min(this.vw / mw, this.vh / mh) * 0.96;
     const overview = (g.phase === 'build' && !g.rehearsal) || g.phase === 'draft' || g.phase === 'lobby' || g.phase === 'results' || g.phase === 'matchEnd';
+    // keep the course clear of the HUD row and the build bar
+    const top = overview ? this.insetTop : 0, bottom = overview ? this.insetBottom : 0;
+    const fit = Math.min(this.vw / mw, Math.max(80, this.vh - top - bottom) / mh) * 0.96;
     if (overview) {
       tz = fit * this.buildZoom;
       if (this.buildZoom > 1) { const c = g.cursor; tx = c.x * C + C / 2; ty = c.y * C + C / 2; }
+      ty += (bottom - top) / 2 / tz;
     } else {
-      tz = Math.max(fit, Math.min(1.6, this.vw / (C * 24)));
+      tz = Math.max(fit, Math.min(1.6, this.vw / (C * (this.vw < 900 ? 17 : 24)))); // phones see fewer, larger cells
       let body: { x: number; y: number; vx: number } | null = null;
       if (g.rehearsal) body = g.rehearsal.sim.players[0].body;
       else if (g.pred) body = { x: g.pred.x + g.corr.x, y: g.pred.y + g.corr.y, vx: g.pred.vx };
@@ -138,7 +143,8 @@ export class Renderer {
     }
     const halfW = this.vw / 2 / tz, halfH = this.vh / 2 / tz;
     tx = mw <= halfW * 2 ? mw / 2 : Math.max(halfW, Math.min(mw - halfW, tx));
-    ty = mh <= halfH * 2 ? mh / 2 : Math.max(halfH, Math.min(mh - halfH, ty));
+    const shift = (bottom - top) / 2 / tz;
+    ty = mh + Math.abs(shift) * 2 <= halfH * 2 ? mh / 2 + shift : Math.max(halfH - top / tz, Math.min(mh - halfH + bottom / tz, ty));
     const k = settings.reducedMotion ? 1 - Math.pow(0.0005, dt) : 1 - Math.pow(0.002, dt);
     if (Math.abs(cam.zoom - tz) > 0.5 || cam.x === 0) { cam.x = tx; cam.y = ty; cam.zoom = tz; }
     cam.x += (tx - cam.x) * k; cam.y += (ty - cam.y) * k; cam.zoom += (tz - cam.zoom) * Math.min(1, k * 1.5);
