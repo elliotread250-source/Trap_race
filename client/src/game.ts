@@ -3,7 +3,8 @@ import { DT, HAZARD, PHYS, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config
 import { laserInOff, moverRect } from '../../shared/hazards';
 import { childRect } from '../../shared/movers';
 import { getItem } from '../../shared/items';
-import { cloneBody, newBody, stepBody, type Body } from '../../shared/physics';
+import { cloneBody, type Body } from '../../shared/physics';
+import { Predictor } from './predict';
 import { checkPlacement, type PlaceCheck, type PlaceRequest } from '../../shared/placement';
 import type { Card, ClientMsg, DraftStage, Phase, RoomInfo, ServerMsg } from '../../shared/protocol';
 import { applyBodySnap, RaceSim, type PlayerSnap, type RaceEvent, type RaceSnapshot, type SimMover } from '../../shared/race';
@@ -42,15 +43,14 @@ export class GameClient {
   roundKey = '';
   snaps: { s: RaceSnapshot; at: number }[] = [];
   lastSnapAt = 0;
-  pred: Body | null = null;
-  predPrev: Body | null = null;
-  pending: { seq: number; b: number }[] = [];
-  seq = 0;
-  sendBuf: { seq: number; b: number }[] = [];
+  /** local-player prediction (see predict.ts); null outside a race */
+  pr: Predictor | null = null;
   acc = 0;
-  /** last snapshot's tick and our acked input: input seq s is processed by the server on tick base.tick + (s - base.ack) */
-  predBase = { tick: 0, ack: 0 };
-  corr = { x: 0, y: 0 };
+  get pred(): Body | null { return this.pr?.pred ?? null; }
+  set pred(v: Body | null) { if (this.pr) this.pr.pred = v; }
+  get pending() { return this.pr?.pending ?? []; }
+  get corr() { return this.pr?.corr ?? { x: 0, y: 0 }; }
+  get seq() { return this.pr?.seq ?? 0; }
   results: { rows: RoundRow[]; competitive: boolean } | null = null;
   matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number } | null = null;
   votes: string[] = [];
@@ -112,7 +112,7 @@ export class GameClient {
 
   reset() {
     this.you = ''; this.code = ''; this.room = null; this.phase = 'lobby'; this.world = null; this.race = null; this.cards = [];
-    this.results = null; this.matchEnd = null; this.pred = null; this.pending = []; this.rehearsal = null; this.fx = []; this.practiceStarted = false;
+    this.results = null; this.matchEnd = null; this.pr = null; this.rehearsal = null; this.fx = []; this.practiceStarted = false;
   }
 
   send(m: ClientMsg) { this.transport?.send(m); }
@@ -161,7 +161,7 @@ export class GameClient {
         this.phase = m.phase; this.round = m.round; this.target = m.target; this.competitive = m.competitive; this.tally = m.tally;
         this.endsAt = performance.now() + m.endsIn;
         if (m.phase === 'lobby') this.toLobbyState();
-        if (m.phase === 'draft') { this.placedThisRound = false; this.results = null; this.matchEnd = null; this.awaitingPlace = false; this.race = null; this.pred = null; }
+        if (m.phase === 'draft') { this.placedThisRound = false; this.results = null; this.matchEnd = null; this.awaitingPlace = false; this.race = null; this.pr = null; }
         if (m.phase === 'build') { this.awaitingPlace = false; this.rot = 0; this.variant = 0; }
         if (m.phase !== 'build') this.rehearsal = null;
         if (m.phase === 'race') { this.acc = 0; this.onEvent({ type: 'go' }); }
@@ -198,9 +198,10 @@ export class GameClient {
         if (this.world) {
           this.race = new RaceSim(this.world.clone(), m.ids, { roundKey: m.roundKey, maxTicks: m.maxTicks });
           this.roundKey = m.roundKey;
-          this.snaps = []; this.pred = null; this.pending = []; this.seq = 0; this.sendBuf = []; this.spectateIdx = 0;
+          this.snaps = []; this.spectateIdx = 0;
+          this.pr = new Predictor(this.race, this.you);
           const me = this.race.player(this.you);
-          if (me) { this.pred = cloneBody(me.body); this.predPrev = cloneBody(me.body); }
+          if (me) this.pr.pred = cloneBody(me.body);
         }
         break;
       case 'snap': this.onSnap(m.s, m.ev); break;
@@ -213,13 +214,16 @@ export class GameClient {
   }
 
   private toLobbyState() {
-    this.world = null; this.race = null; this.cards = []; this.results = null; this.matchEnd = null; this.pred = null; this.rehearsal = null;
+    this.world = null; this.race = null; this.cards = []; this.results = null; this.matchEnd = null; this.pr = null; this.rehearsal = null;
   }
 
   // ------------------------------------------------ race: snapshots, prediction, reconciliation
   private onSnap(s: RaceSnapshot, ev: RaceEvent[]) {
     const race = this.race;
     if (!race) return;
+    for (const e of ev) this.onEvent(e);
+    // a snapshot that is not newer than the last one would rewind the mirror and the prediction: drop it
+    if (this.pr && !this.pr.accept(s)) return;
     const now = performance.now();
     this.snaps.push({ s, at: now });
     if (this.snaps.length > 30) this.snaps.shift();
@@ -229,25 +233,8 @@ export class GameClient {
     race.applySnapshot(s);
     for (const ps of s.players) { const p = race.player(ps.id); if (p) applyBodySnap(p.body, ps); }
     race.projectiles = s.proj.map(([id, kind, x, y, vx, vy]) => ({ id, kind, owner: null, src: '', x, y, vx, vy, r: kind === 'cannon' ? HAZARD.cannonBallR : 4, age: 0, hit: [], alive: true }));
-    for (const e of ev) this.onEvent(e);
     const me = s.players.find(p => p.id === this.you);
-    if (me) { this.predBase = { tick: s.tick, ack: me.ack }; this.reconcile(me); }
-  }
-
-  private reconcile(me: PlayerSnap) {
-    const race = this.race!;
-    if (me.st !== 'racing') { this.pred = null; this.pending = []; return; }
-    if (!this.pred) this.pred = newBody(me.x, me.y);
-    const before = { x: this.pred.x, y: this.pred.y };
-    applyBodySnap(this.pred, me);
-    this.pending = this.pending.filter(p => p.seq > me.ack);
-    const p = race.player(this.you)!;
-    // replay each unacknowledged input against the platform poses of the exact tick the server will run it on
-    for (const pi of this.pending) { stepBody(this.pred, pi.b, race.envFor(p, this.predMovers(this.tickForSeq(pi.seq)))); this.stats.predSteps++; }
-    const dx = before.x - this.pred.x, dy = before.y - this.pred.y;
-    this.stats.lastCorr = Math.hypot(dx, dy);
-    // small corrections are smoothed visually; big ones snap
-    if (Math.hypot(dx, dy) < 64) { this.corr.x += dx; this.corr.y += dy; } else { this.corr.x = 0; this.corr.y = 0; }
+    if (me && this.pr) { this.pr.reconcile(s, me); this.stats.lastCorr = this.pr.stats.lastCorr; this.stats.predSteps = this.pr.stats.predSteps; }
   }
 
   /** Called every animation frame with elapsed ms. */
@@ -265,8 +252,7 @@ export class GameClient {
       for (const h of race.hz) h.phase += steps * (h.kind === 'laser' ? (laserInOff(h.phase) ? slow : 1) : h.slowable ? slow : 1);
       for (const m of race.movers) if (m.hz) { m.prev = m.rect; m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); }
     }
-    const k = Math.pow(0.0001, dtMs / 1000); // decay correction offset quickly
-    this.corr.x *= k; this.corr.y *= k;
+    this.pr?.decay(dtMs); // ease out the visual correction offset quickly
     if (this.phase !== 'race' || !this.pred) return;
     this.acc += Math.min(dtMs, 200);
     while (this.acc >= STEP) { this.acc -= STEP; this.localTick(); }
@@ -274,32 +260,15 @@ export class GameClient {
   }
 
   private localTick() {
-    const race = this.race!;
-    const p = race.player(this.you);
-    if (!p || !this.pred) return;
-    const bits = inputBits();
-    this.seq++;
-    this.pending.push({ seq: this.seq, b: bits });
-    if (this.pending.length > 240) this.pending.shift();
-    this.sendBuf.push({ seq: this.seq, b: bits });
-    this.predPrev = cloneBody(this.pred);
-    stepBody(this.pred, bits, race.envFor(p, this.predMovers(this.tickForSeq(this.seq))));
-    if (this.pred.jumped || this.pred.wallJumped) this.onEvent({ type: 'localJump', wall: this.pred.wallJumped });
-    if (this.pred.landed) this.onEvent({ type: 'localLand' });
+    const pr = this.pr;
+    if (!pr || !pr.pred) return;
+    pr.step(inputBits());
+    if (pr.pred?.jumped || pr.pred?.wallJumped) this.onEvent({ type: 'localJump', wall: pr.pred.wallJumped });
+    if (pr.pred?.landed) this.onEvent({ type: 'localLand' });
     this.flushInputs(false);
   }
 
-  tickForSeq(seq: number): number { return this.predBase.tick + (seq - this.predBase.ack); }
-
-  /**
-   * Platforms for predicting one input: kinematic bodies at the exact server tick that input runs on, legacy moving
-   * platforms at the mirror's current phase with a one-tick delta (so riding carries exactly like the server).
-   */
-  private predMovers(tick: number) {
-    const race = this.race!;
-    const slow = race.slowTicks > 0 ? 0.5 : 1;
-    return race.moversAt(tick, (m: SimMover) => ({ rect: moverRect(m.o, m.hz!.phase, m.hz!.pathLen), prev: moverRect(m.o, m.hz!.phase - DT * slow, m.hz!.pathLen) }));
-  }
+  tickForSeq(seq: number): number { return this.pr ? this.pr.tickForSeq(seq) : 0; }
 
   /**
    * The tick at which kinematic platforms are drawn: our own prediction tick while racing (so we line up with the
@@ -319,10 +288,8 @@ export class GameClient {
   moverRectAt(m: SimMover, tick: number) { return m.hz ? m.rect : childRect(m.o, m.child, tick); }
 
   private flushInputs(force: boolean) {
-    if (!this.sendBuf.length) return;
-    if (!force && this.sendBuf.length < 2) return;
-    this.send({ t: 'in', round: this.round, s: this.sendBuf[0].seq, b: this.sendBuf.map(x => x.b) });
-    this.sendBuf = [];
+    const batch = this.pr?.takeBatch(force);
+    if (batch) this.send({ t: 'in', round: this.round, s: batch.s, b: batch.b });
   }
 
   /** Estimated server tick for interpolation. */
