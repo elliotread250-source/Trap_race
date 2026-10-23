@@ -127,10 +127,10 @@ export const HAZARD = {
   holeRadius: 300, // visible attraction field; the lethal core stays small
   holeCore: 15,
   holeSoft: 36, // softening length: acceleration stops growing as the centre is approached, so there is no singularity
-  holePull: 2300, // acceleration at the softened centre of the field (px/s^2), before falloff
+  holePull: 3200, // acceleration at the softened centre of the field (px/s^2), before falloff
   holeFalloff: 1.6, // exponent of the fade towards the field edge
-  holeMaxPull: 2300, // per-hole cap
-  holeMaxTotal: 3000, // cap on the summed pull of several holes
+  holeMaxPull: 3200, // per-hole cap
+  holeMaxTotal: 4200, // cap on the summed pull of several holes
   holeMaxSpeed: 780, // speed limit while inside a field, so stronger pull can never tunnel through walls or skip the core
   holeProjectileMul: 1, // projectiles feel the same field as players; tune separately if needed
   movingSpeed: 96,
