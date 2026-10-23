@@ -1,7 +1,7 @@
 // Every tuning value in one place. Sizes for building are in grid cells; physics is in pixels.
 
 export const GAME_TITLE = 'Trap Race';
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 export const CELL = 48; // pixels per grid cell; one authoritative grid for every map
 export const TICK_HZ = 60;
@@ -44,6 +44,7 @@ export const TIMERS = {
   buildMs: 35000,
   countdownMs: 3000,
   raceMs: 90000,
+  scoutS: 45, // race length while a build-required course has no full route yet
   resultsMs: 9000,
   matchResultsMs: 0, // waits for rematch / lobby
   botDraftDelayMs: [2200, 6500] as [number, number],
@@ -113,6 +114,20 @@ export const HAZARD = {
   movingPathCells: 4,
   wireThickness: 11,
   spikeHeight: 20,
+};
+
+/**
+ * Kinematic platforms (Shuttle Block, Ferris Wheel). Motion is a pure function of race ticks since GO, so the server,
+ * client prediction, rendering and bots all agree. Periods are whole ticks so the motion repeats exactly.
+ */
+export const MOVERS = {
+  shuttleTravelCells: 3, // the 2x1 block slides 3 cells past its anchor and back (5-cell swept lane)
+  shuttlePeriodTicks: 192, // 3.2 s round trip; cosine-eased so it slows to a stop at each end (peak ~141 px/s)
+  wheelRadiusCells: 3, // platform centres sit 144 px from the pivot: adjacent gondolas never touch, riders keep headroom
+  wheelPeriodTicks: 480, // one lap every 8 s (tangential speed ~113 px/s, slower than walking)
+  riderHeadroomPx: 46, // space above every pose kept free of solids so riders are never crushed (body is 42 px)
+  inheritVelocity: 0, // jumping off a moving platform keeps no platform velocity (bounded at 0 px/s)
+  resolveMaxPx: 120, // furthest a moving platform may shove a player out of its way when it catches them
 };
 
 export const POWER = {

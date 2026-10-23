@@ -1,9 +1,9 @@
 // Data-driven item catalogue. Masks are occupied cells at rotation 0, anchored at the top-left of their bounding box.
 import type { Cell } from './grid';
-import { HAZARD, POWER } from './config';
+import { HAZARD, MOVERS, POWER } from './config';
 
 export type ItemKind =
-  | 'block' | 'oneway' | 'spring' | 'conveyor' | 'moving' | 'crumble'
+  | 'block' | 'oneway' | 'spring' | 'conveyor' | 'moving' | 'crumble' | 'shuttle' | 'wheel'
   | 'spikes' | 'rspikes' | 'saw' | 'dart' | 'laser' | 'pendulum'
   | 'blackhole' | 'sniper' | 'cannon' | 'crossbow' | 'wire'
   | 'coin' | 'power' | 'bomb';
@@ -58,6 +58,8 @@ const defs: ItemDef[] = [
   { id: 'spring', name: 'Spring Pad', kind: 'spring', group: 'construction', category: 'Traversal', mask: rect(1, 1), rotatable: true, solid: false, supportive: false, slowable: false, weight: 0.9, desc: 'Launches anyone who touches the pad along its surface direction.', rotationNote: 'Rotates: launch direction follows the pad.' },
   { id: 'conveyor', name: 'Conveyor', kind: 'conveyor', group: 'construction', category: 'Traversal', mask: rect(3, 1), rotatable: true, solid: true, supportive: true, slowable: false, weight: 0.7, desc: 'A solid belt. Flat belts carry riders along the arrows; upright belts drag wall-sliders up or down at 130 px/s.', rotationNote: 'Rotates: belt direction turns (right, down, left, up).' },
   { id: 'moving', name: 'Moving Platform', kind: 'moving', group: 'construction', category: 'Traversal', mask: rect(3, 1), rotatable: true, solid: true, supportive: false, slowable: true, weight: 0.8, desc: `Glides back and forth up to ${HAZARD.movingPathCells} cells and carries riders. Stops short of solids. Slowed by Slow Pulse.`, rotationNote: 'Rotates: path direction turns with it.' },
+  { id: 'shuttle', name: 'Shuttle Block 2×1', kind: 'shuttle', group: 'construction', category: 'Moving', mask: rect(2, 1), rotatable: true, solid: true, supportive: false, slowable: false, weight: 0.9, desc: `A solid 2×1 block that glides ${MOVERS.shuttleTravelCells} cells along the arrow and back every ${MOVERS.shuttlePeriodTicks / 60}s, easing to a stop at each end. Carries riders. Its whole lane is reserved.`, rotationNote: 'Rotates: a quarter turn makes it a 1×2 lift. The arrow shows which way it sets off at GO.' },
+  { id: 'wheel', name: 'Ferris Wheel', kind: 'wheel', group: 'construction', category: 'Moving', mask: rect(1, 1), rotatable: true, solid: false, supportive: false, slowable: false, variants: ['Clockwise', 'Counter-clockwise'], weight: 0.7, desc: `Four solid 2×1 gondolas orbit a pivot ${MOVERS.wheelRadiusCells} cells away, one lap every ${MOVERS.wheelPeriodTicks / 60}s. Gondolas stay level. The pivot and spokes are not solid.`, rotationNote: 'Rotates: odd turns stand the gondolas upright (1×2). F flips the spin direction.' },
   { id: 'crumble', name: 'Crumbling Platform', kind: 'crumble', group: 'construction', category: 'Traversal', mask: rect(3, 1), rotatable: true, solid: true, supportive: false, slowable: false, weight: 0.7, desc: `Breaks ${HAZARD.crumbleDelay}s after you land and returns ${HAZARD.crumbleRespawn}s later.`, rotationNote: ROT_ALL },
 
   // Hazards
@@ -99,4 +101,6 @@ export function getItem(id: string): ItemDef {
 
 /** Kinds that count as stationary solid support for snipers and barbed wire. */
 export const SUPPORT_KINDS: ReadonlySet<ItemKind> = new Set(['block', 'conveyor']);
+/** Platforms whose solid bodies move on a fixed tick-based path (their swept area is reserved). */
+export const KINEMATIC_KINDS: ReadonlySet<ItemKind> = new Set(['shuttle', 'wheel']);
 export const HAZARD_KINDS: ReadonlySet<ItemKind> = new Set(['spikes', 'rspikes', 'saw', 'dart', 'laser', 'pendulum', 'blackhole', 'sniper', 'cannon', 'crossbow', 'wire']);

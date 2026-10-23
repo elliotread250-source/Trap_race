@@ -10,7 +10,9 @@ import type { Body } from '../../shared/physics';
 import type { RaceSim } from '../../shared/race';
 import { footprint, TERRAIN_ID, type PlacedObject, type World } from '../../shared/world';
 import { NavGraph } from '../../shared/nav';
-import { drawBlackHole, drawCharacter, drawCoinShape, drawItem, PLAYER_COLORS, type AnimState } from './art';
+import { drawBlackHole, drawCharacter, drawCoinShape, drawGondola, drawItem, drawShuttleBody, drawWheelHub, PLAYER_COLORS, type AnimState } from './art';
+import { drawAmbient, drawSceneryBackground, hasScenery, paintSceneryTerrain, type ViewInfo } from './scenery';
+import { childCount, childRect, isKinematic, newMotion, pivotPx, referenceRects, shuttleDir, sweepOf, wheelAngle } from '../../shared/movers';
 import type { GameClient } from './game';
 import { settings } from './store';
 
@@ -88,6 +90,7 @@ export class Renderer {
     ctx.scale(this.cam.zoom, this.cam.zoom);
     ctx.translate(-this.cam.x, -this.cam.y);
     this.drawTerrain(world);
+    if (hasScenery(map)) drawAmbient(this.ctx, map, this.view());
     this.drawZones(world, g);
     const sim = g.rehearsal?.sim ?? g.race;
     this.drawObjects(world, sim, g);
@@ -139,7 +142,8 @@ export class Renderer {
         else { const f = w.finishPx; tx = f.x + f.w / 2; ty = f.y; }
       }
       if (!body && g.phase === 'countdown' && sim) { const p = sim.player(g.you) ?? sim.players[0]; body = p ? p.body : null; }
-      if (body) { tx = body.x + BW / 2 + Math.max(-60, Math.min(60, body.vx * 0.22)); ty = body.y + BH / 2 - 20; }
+      // look ahead in the direction of travel so long jumps on the big maps are never blind
+      if (body) { tx = body.x + BW / 2 + Math.max(-140, Math.min(140, body.vx * 0.42)); ty = body.y + BH / 2 - 30; }
     }
     const halfW = this.vw / 2 / tz, halfH = this.vh / 2 / tz;
     tx = mw <= halfW * 2 ? mw / 2 : Math.max(halfW, Math.min(mw - halfW, tx));
@@ -151,7 +155,10 @@ export class Renderer {
   }
 
   // ------------------------------------------------------------- background
+  view(): ViewInfo { return { camX: this.cam.x, camY: this.cam.y, zoom: this.cam.zoom, vw: this.vw, vh: this.vh, t: this.t, reduced: settings.reducedMotion, budget: this.particleBudget() }; }
+
   private drawBackground(map: MapDef) {
+    if (hasScenery(map)) { drawSceneryBackground(this.ctx, map, this.view()); return; }
     const ctx = this.ctx, th = map.theme;
     const g = ctx.createLinearGradient(0, 0, 0, this.vh);
     g.addColorStop(0, th.skyTop); g.addColorStop(1, th.skyBottom);
@@ -207,13 +214,18 @@ export class Renderer {
   private drawTerrain(world: World) {
     const key = `${world.map.id}`;
     if (!this.terrainCache || this.terrainCache.key !== key) this.terrainCache = { key, canvas: this.renderTerrain(world) };
-    this.ctx.drawImage(this.terrainCache.canvas, 0, 0);
+    // blit only the visible part: the large maps' terrain canvas is several thousand pixels wide
+    const cv = this.terrainCache.canvas, z = this.cam.zoom;
+    const x0 = Math.max(0, Math.floor(this.cam.x - this.vw / 2 / z) - 2), y0 = Math.max(0, Math.floor(this.cam.y - this.vh / 2 / z) - 2);
+    const x1 = Math.min(cv.width, Math.ceil(this.cam.x + this.vw / 2 / z) + 2), y1 = Math.min(cv.height, Math.ceil(this.cam.y + this.vh / 2 / z) + 2);
+    if (x1 > x0 && y1 > y0) this.ctx.drawImage(cv, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
   }
 
   private renderTerrain(world: World): HTMLCanvasElement {
     const cv = document.createElement('canvas');
     cv.width = world.w * C; cv.height = world.h * C;
     const ctx = cv.getContext('2d')!;
+    if (hasScenery(world.map)) { paintSceneryTerrain(ctx, world); return cv; }
     const th = world.map.theme;
     const solid = (x: number, y: number) => { const t = world.terrainAt(x, y); return t === 1 || t === 2; };
     for (let y = 0; y < world.h; y++) for (let x = 0; x < world.w; x++) {
@@ -307,8 +319,22 @@ export class Renderer {
         ctx.save(); ctx.globalAlpha = 0.25; drawCoinShape(ctx, o.x * C + C / 2, o.y * C + C / 2, 9, 0); ctx.restore();
         continue;
       }
+      if (isKinematic(o)) {
+        // bomb aiming freezes every moving platform at its GO pose, the pose bombs target
+        const frozen = demo;
+        const tick = frozen ? 0 : g.renderTick();
+        if (g.phase === 'build' || g.phase === 'draft') this.drawLane(o, targets.has(o.id) || g.check?.reserved === o.id ? 'rgba(255,90,60,' : 'rgba(127,240,224,');
+        this.drawKinematic(o, tick, col, false);
+        if (demo && targets.has(o.id)) {
+          ctx.save(); ctx.strokeStyle = '#ff5a2a'; ctx.lineWidth = 4; ctx.fillStyle = 'rgba(255,90,40,.3)';
+          for (const r of referenceRects(o)) { ctx.fillRect(r.x, r.y, r.w, r.h); ctx.strokeRect(r.x + 2, r.y + 2, r.w - 4, r.h - 4); }
+          if (getItem(o.item).kind === 'wheel') { const p = pivotPx(o); ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, Math.PI * 2); ctx.stroke(); }
+          ctx.restore();
+        }
+        continue;
+      }
       if (def.kind === 'moving') {
-        const len = sim ? sim.movers.find(m => m.o.id === o.id)?.hz.pathLen ?? 0 : moverPathLen(world, o);
+        const len = sim ? sim.movers.find(m => m.o.id === o.id)?.hz?.pathLen ?? 0 : moverPathLen(world, o);
         const r = moverRect(o, phase, len);
         if (!sim || g.phase === 'build') this.drawMoverPath(o, len);
         const dx = r.x - o.cells[0][0] * C, dy = r.y - o.cells[0][1] * C;
@@ -354,6 +380,36 @@ export class Renderer {
         ctx.save(); ctx.strokeStyle = 'rgba(200,200,220,.8)'; ctx.setLineDash([3, 3]); for (const [x, y] of o.cells) ctx.strokeRect(x * C + 4, y * C + 4, C - 8, C - 8); ctx.restore();
       }
     }
+  }
+
+  /** A moving platform's reserved lane and rider headroom (shown only while drafting and building). */
+  private drawLane(o: PlacedObject, color: string, cells?: { sweep: [number, number][]; headroom: [number, number][] }) {
+    const ctx = this.ctx;
+    const sw = cells ?? sweepOf(o);
+    ctx.save();
+    ctx.fillStyle = color + '.10)';
+    for (const [x, y] of sw.sweep) ctx.fillRect(x * C, y * C, C, C);
+    ctx.strokeStyle = color + '.35)'; ctx.lineWidth = 1;
+    for (const [x, y] of sw.sweep) ctx.strokeRect(x * C + 0.5, y * C + 0.5, C - 1, C - 1);
+    ctx.setLineDash([2, 5]); ctx.strokeStyle = color + '.3)';
+    for (const [x, y] of sw.headroom) ctx.strokeRect(x * C + 4, y * C + 4, C - 8, C - 8);
+    ctx.restore();
+  }
+
+  /** Draw a shuttle or wheel at a (possibly fractional) tick. */
+  private drawKinematic(o: PlacedObject, tick: number, owner: string, ghost: boolean) {
+    const kind = getItem(o.item).kind;
+    if (kind === 'shuttle') {
+      const r = childRect(o, 0, tick), r2 = childRect(o, 0, tick + 1);
+      const d = shuttleDir(o);
+      const moving = Math.sign((r2.x - r.x) * d.x + (r2.y - r.y) * d.y) || 1;
+      drawShuttleBody(this.ctx, r, { x: d.x * moving, y: d.y * moving }, owner, this.t, ghost);
+      return;
+    }
+    const p = pivotPx(o);
+    const rects = Array.from({ length: childCount(o) }, (_, i) => childRect(o, i, tick));
+    drawWheelHub(this.ctx, p.x, p.y, rects.map(r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 })), owner, wheelAngle(o, 0, tick), ghost);
+    rects.forEach((r, i) => drawGondola(this.ctx, r, owner, i, ghost));
   }
 
   private drawMoverPath(o: PlacedObject, len: number) {
@@ -443,7 +499,8 @@ export class Renderer {
         const o = { id: '_', item, owner: null, prov: 'player' as const, x: r.x, y: r.y, rot: r.rot as Rot, variant: 0, cells, attach: null, round: 0 };
         this.drawMoverPath(o, moverPathLen(world, o));
       }
-      drawItem(ctx, def, cells, 0, 0, r.rot as Rot, { ghost: true, owner: '#ffd25e', t: this.t, variant: r.variant, state: 'out' });
+      if (def.kind === 'shuttle' || def.kind === 'wheel') { this.drawMoverPreview(world, def.kind, r, cells, ok); }
+      else drawItem(ctx, def, cells, 0, 0, r.rot as Rot, { ghost: true, owner: '#ffd25e', t: this.t, variant: r.variant, state: 'out' });
     } else {
       const n = def.bombSize ?? 1;
       drawItem(ctx, def, [], r.x * C, r.y * C, 0, { ghost: false, t: this.t });
@@ -460,6 +517,45 @@ export class Renderer {
       ctx.fillStyle = '#ffc1c9'; ctx.fillText(text, x * C + 8, y * C - 13);
       ctx.restore();
     }
+  }
+
+  /**
+   * Moving platform preview: the whole swept lane and rider headroom it will reserve, the GO pose solid, a ghost moving
+   * along the real path, the direction of travel and the timing. Validity never depends on the animation.
+   */
+  private drawMoverPreview(world: World, kind: 'shuttle' | 'wheel', r: { item: string; x: number; y: number; rot: number; variant: number }, cells: [number, number][], ok: boolean) {
+    const ctx = this.ctx;
+    const o: PlacedObject = { id: '_', item: r.item, owner: null, prov: 'player', x: r.x, y: r.y, rot: r.rot as Rot, variant: r.variant, cells, attach: null, round: 0, mv: newMotion(r.item, r.variant) };
+    this.drawLane(o, ok ? 'rgba(80,240,140,' : 'rgba(255,80,90,');
+    const m = o.mv!;
+    const tick = ((performance.now() / 1000) * 60) % m.period;
+    this.drawKinematic(o, tick, '#ffd25e', true);
+    this.drawKinematic(o, 0, ok ? '#50f08c' : '#ff505a', false);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+    let label: string;
+    if (kind === 'shuttle') {
+      const a = childRect(o, 0, 0), b = childRect(o, 0, m.period / 2), d = shuttleDir(o);
+      const ax = a.x + a.w / 2, ay = a.y + a.h / 2, bx = b.x + b.w / 2, by = b.y + b.h / 2;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(bx + d.x * 10, by + d.y * 10); ctx.lineTo(bx - d.y * 8 - d.x * 4, by + d.x * 8 - d.y * 4); ctx.lineTo(bx + d.y * 8 - d.x * 4, by - d.x * 8 - d.y * 4); ctx.fill();
+      label = `${m.travel} cells out and back every ${(m.period / 60).toFixed(1)}s`;
+    } else {
+      const p = pivotPx(o), R = m.radius!;
+      ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      // direction arrow on the orbit, just ahead of gondola 1's starting point
+      const a0 = wheelAngle(o, 0, 0) + (m.dir ?? 1) * 0.5;
+      const ax = p.x + Math.cos(a0) * R, ay = p.y + Math.sin(a0) * R, tx = -Math.sin(a0) * (m.dir ?? 1), ty = Math.cos(a0) * (m.dir ?? 1);
+      ctx.beginPath(); ctx.moveTo(ax + tx * 12, ay + ty * 12); ctx.lineTo(ax - ty * 8 - tx * 4, ay + tx * 8 - ty * 4); ctx.lineTo(ax + ty * 8 - tx * 4, ay - tx * 8 - ty * 4); ctx.fill();
+      label = `${m.dir === -1 ? 'Counter-clockwise' : 'Clockwise'}, one lap every ${(m.period / 60).toFixed(0)}s · centre is open`;
+    }
+    ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'left';
+    const bb = sweepOf(o).bbox;
+    const w = ctx.measureText(label).width + 14;
+    ctx.fillStyle = 'rgba(10,14,30,.8)'; ctx.fillRect(bb.x, bb.y + bb.h + 4, w, 22);
+    ctx.fillStyle = '#dff'; ctx.fillText(label, bb.x + 7, bb.y + bb.h + 20);
+    ctx.restore();
+    void world;
   }
 
   private drawAim(world: World, kind: string, r: { x: number; y: number; rot: number; variant: number; item: string }, cells: [number, number][]) {

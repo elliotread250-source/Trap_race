@@ -25,6 +25,13 @@
 
 - Mobile (Chromium emulation, `tests/e2e/mobile.mjs`): portrait rotate prompt; phone landscape and tablet: tap/drag aiming, Place button, on-screen controls with multi-touch run + jump
 
+## Map and moving-platform update (Oct 2026), automated
+- `tests/unit/movers.test.ts`: exact 2×1/1×2 bodies, lanes follow rotation, smooth repeated reversal, riders carried exactly (no drift, no boosts), jump off and land again, never pushed through walls; four gondolas 90° apart at the radius, never touching, phase-locked over 1,000,000 ticks, non-collidable pivot and centre, laps with a rider without jitter; lane reservation and conflicts, headroom, no attachments; projectiles hit bodies with relative motion, pass the pivot; bombs remove the whole wheel and its lane.
+- `tests/unit/maps.test.ts`: large maps ≥1.5× wider; flags at the far end; only wire authored; old Rooftop plank skip gone; left-wall shafts give no whole-map skip on any map; mountain rock continuous and fused to the sky (air-connectivity proof); Oak uncrossable without building, opened by Plank 5/7, Spring, Shuttle lift or two small blocks; partial building accepted, cut-offs rejected, spawn and terrain rules kept; bots cross mover-only pits.
+- `tests/unit/match.test.ts`: six players (five bots) on the Oak for four rounds with shuttles and wheels in every draft: bots bridge the tree by round 2, movers reset to their GO pose every race, tallies match round rows.
+- `tests/e2e/movers.mjs` (two Chromium contexts on Under the Mountain, 14 checks): both cards in the draft, lane-into-rock rejected, shuttle and wheel placed through the server, identical motion definitions and reserved lanes, identical poses at 30 shared ticks, reload mid-race keeps identity, items and phase, bomb on the pivot removes the wheel everywhere, next race has only the shuttle.
+- Existing suites still pass: `npm test` (76 tests), `tests/e2e/run.mjs` (12/12), `tests/e2e/mobile.mjs` (now skips bomb cards on an empty first course, which could make it flaky).
+
 ## Implemented, verified by hand or by benchmark only
 - Physical phones and tablets (only emulated so far; iOS Safari cannot lock orientation or go fullscreen, so it relies on the rotate prompt)
 - Bot completion rates (`scripts/bot-race.ts`, `scripts/bot-bench.ts`), numbers in README

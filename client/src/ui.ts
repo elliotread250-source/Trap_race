@@ -1,5 +1,5 @@
 // DOM interface. Names and other player text are always set with textContent, never parsed as HTML.
-import { GAME_TITLE, HAZARD, MATCH, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
+import { GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import { MAP_LIST } from '../../shared/maps';
 import { World } from '../../shared/world';
@@ -28,12 +28,27 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, 
 type Screen = 'menu' | 'join' | 'ai' | 'practice' | 'howto' | 'skins' | 'settings' | 'game' | 'connecting';
 
 const previews = new Set<{ canvas: HTMLCanvasElement; skin: number; color: string; state: 'idle' | 'run' | 'celebrate' | 'wallslide' }>();
+/** Extra build-bar guidance for the items whose rules are spatial rather than visible in their footprint. */
+function buildTip(kind: string, rotationNote: string): string {
+  if (kind === 'shuttle') return 'The shaded lane is reserved for its whole path; the dotted band above stays clear for riders. ' + rotationNote;
+  if (kind === 'wheel') return 'Shaded cells are every place a gondola passes, reserved; the open centre stays usable. ' + rotationNote;
+  if (kind === 'bomb') return 'Moving platforms freeze at their starting pose while you aim: hit a shuttle, any gondola or a wheel\'s pivot to remove the whole thing.';
+  if (kind === 'wire' || kind === 'sniper') return rotationNote + ' Nothing can bolt onto moving platforms.';
+  return rotationNote;
+}
+
+const moverCards = new Set<{ canvas: HTMLCanvasElement; item: string }>();
+
 function skinCanvas(skin: number, color: string, w: number, hgt: number, state: 'idle' | 'run' | 'celebrate' | 'wallslide' = 'idle') {
   const c = h('canvas', { width: w * 2, height: hgt * 2 });
   previews.add({ canvas: c, skin, color, state });
   return c;
 }
 export function animatePreviews(t: number) {
+  for (const c of [...moverCards]) {
+    if (!c.canvas.isConnected) { moverCards.delete(c); continue; }
+    drawCardPreview(c.canvas, c.item, settings.reducedMotion ? 0 : t);
+  }
   for (const p of [...previews]) {
     if (!p.canvas.isConnected) { previews.delete(p); continue; }
     const ctx = p.canvas.getContext('2d')!;
@@ -211,7 +226,8 @@ export class UI {
     return h('div', { class: 'maps' }, ...MAP_LIST.map(m => {
       const cv = h('canvas', { width: 256, height: 104 });
       Renderer.mapThumb(cv, new World(m.id));
-      return h('button', { class: `map-tile ${m.id === selected ? 'sel' : ''}`, disabled, onclick: () => { sfx.click(); onPick(m.id); }, title: m.blurb }, cv, h('div', { class: 'mt' }, m.name));
+      return h('button', { class: `map-tile ${m.id === selected ? 'sel' : ''}`, disabled, onclick: () => { sfx.click(); onPick(m.id); }, title: m.blurb }, cv,
+        h('div', { class: 'mt' }, m.name, m.size === 'large' && h('span', { class: 'badge' }, m.buildRequired ? 'Large · build to cross' : 'Large')));
     }));
   }
 
@@ -251,8 +267,12 @@ export class UI {
       h('p', {}, 'A shared pool of 5–10 cards, always at least one per player. Each card can be taken by exactly one player. Miss the timer and you get a random leftover card.'),
       h('h3', {}, 'Build'),
       h('p', {}, 'Everything snaps to the grid. Green means legal, red tells you why not. Items can’t overlap anything, and can’t go in the striped safety zones around START and FINISH. You can’t completely block the course: the server checks that a route to the flag survives using the real jump physics. Bombs remove player-built objects (never map terrain or map wire). Press Rehearse to test the course; it never scores.'),
+      h('h3', {}, 'Moving platforms'),
+      h('p', {}, `The Shuttle Block slides ${MOVERS.shuttleTravelCells} cells and back every ${MOVERS.shuttlePeriodTicks / 60}s; the Ferris Wheel carries four level gondolas around a pivot you can pass through, one lap every ${MOVERS.wheelPeriodTicks / 60}s. Both carry you exactly as they move, restart from the same pose at every GO, and reserve their whole path (shaded while building) so nothing can be placed in their way. Jumping off keeps no platform speed. Bombs hit them at their starting pose, which the build view freezes on while you hold a bomb.`),
+      h('h3', {}, 'Big maps'),
+      h('p', {}, 'The Great Oak can’t be crossed until someone builds a way over the tree: while there is no full route, every draft guarantees building cards, races are short scouting runs, and you may place anything that doesn’t cut players off from the furthest point they can reach. Under the Mountain is sealed to the sky: the only way on is through the cave.'),
       h('h3', {}, 'Controls'),
-      h('p', {}, `${keyLabel(settings.binds.left[0])}/${keyLabel(settings.binds.right[0])} move, ${keyLabel(settings.binds.jump[0])} jump, hold ${keyLabel(settings.binds.sprint[0])} to sprint, ${keyLabel(settings.binds.down[0])} + jump drops through one-way platforms. Slide down any wall by falling against it and press jump to wall-jump. You can steer back to the same wall and keep climbing as often as you like. Building: mouse to aim, click or ${keyLabel(settings.binds.confirm[0])} to place, right-click or ${keyLabel(settings.binds.rotate[0])} to rotate, ${keyLabel(settings.binds.flip[0])} flips a sniper, wheel or ${keyLabel(settings.binds.zoom[0])} zooms. Arrow keys also move the cursor while building.`),
+      h('p', {}, `${keyLabel(settings.binds.left[0])}/${keyLabel(settings.binds.right[0])} move, ${keyLabel(settings.binds.jump[0])} jump, hold ${keyLabel(settings.binds.sprint[0])} to sprint, ${keyLabel(settings.binds.down[0])} + jump drops through one-way platforms. Slide down any wall by falling against it and press jump to wall-jump. You can steer back to the same wall and keep climbing as often as you like. Building: mouse to aim, click or ${keyLabel(settings.binds.confirm[0])} to place, right-click or ${keyLabel(settings.binds.rotate[0])} to rotate, ${keyLabel(settings.binds.flip[0])} flips a sniper’s facing or a Ferris wheel’s spin, the mouse wheel or ${keyLabel(settings.binds.zoom[0])} zooms. Arrow keys also move the cursor while building.`),
       h('h3', {}, 'Scoring'),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' },
         h('tr', {}, h('th', {}, 'Event'), h('th', {}, 'Points'), h('th', {}, 'When')),
@@ -398,6 +418,7 @@ export class UI {
       const def = getItem(c.item);
       const cv = h('canvas', { width: 240, height: 180 });
       drawCardPreview(cv, c.item, 0.5);
+      if (def.kind === 'shuttle' || def.kind === 'wheel') moverCards.add({ canvas: cv, item: c.item });
       const takenBy = c.by ? g.member(c.by) : null;
       const btn = h('button', { class: `icard ${c.by === g.you ? 'mine' : ''}`, disabled: !!c.by || !!mine || spectator, onclick: () => { sfx.click(); g.send({ t: 'claim', round: g.round, card: c.id }); }, 'aria-label': `Claim ${def.name}` },
         cv,
@@ -411,7 +432,7 @@ export class UI {
     });
     return h('div', { class: 'draft' },
       h('h2', {}, `Round ${g.round}/${g.rounds} · Draft`),
-      h('div', { class: 'sub' }, spectator ? 'Spectating this match.' : mine ? `You picked ${getItem(mine.item).name}. Waiting for the others…` : 'Pick one item. Each card can be claimed by exactly one player.', g.demolition ? ' A bomb is guaranteed this round: the course looked blocked.' : ''),
+      h('div', { class: 'sub' }, spectator ? 'Spectating this match.' : mine ? `You picked ${getItem(mine.item).name}. Waiting for the others…` : 'Pick one item. Each card can be claimed by exactly one player.', g.demolition ? ' A bomb is guaranteed this round: the course looked blocked.' : '', g.courseOpen ? '' : ' No full route to the flag yet: everyone gets a building card to choose. Build the crossing!'),
       h('div', { class: 'cards' }, ...cards),
     );
   }
@@ -427,10 +448,10 @@ export class UI {
     const status = g.awaitingPlace ? h('span', { class: 'valid ok' }, 'Checking route…') : chk?.ok ? h('span', { class: 'valid ok' }, def.kind === 'bomb' ? `Removes ${(chk.targets?.length ?? 0) + (chk.dependents?.length ?? 0)} item(s)` : def.kind === 'wire' ? `Valid · ${chk.wireLen} segment${chk.wireLen === 1 ? '' : 's'}${chk.trimmed ? ` (${chk.trimmed} trimmed)` : ''}` : 'Valid spot') : h('span', { class: 'valid bad' }, chk?.reason ?? 'Move the cursor onto the course');
     const kb = (a: keyof typeof settings.binds) => h('kbd', {}, keyLabel(settings.binds[a][0]));
     return h('div', { class: 'buildbar' },
-      h('div', { class: 'info' }, h('b', {}, def.name + (def.variants ? ` · ${def.variants[g.variant]}` : '')), h('span', {}, def.rotationNote)),
+      h('div', { class: 'info' }, h('b', {}, def.name + (def.variants ? ` · ${def.variants[g.variant]}` : '')), h('span', {}, buildTip(def.kind, def.rotationNote))),
       status,
       def.rotatable && h('button', { class: 'btn small', onclick: () => g.rotate(1) }, 'Rotate'),
-      def.variants && h('button', { class: 'btn small', onclick: () => g.flip() }, 'Flip facing'),
+      def.variants && h('button', { class: 'btn small', onclick: () => g.flip() }, def.kind === 'wheel' ? 'Flip spin' : 'Flip facing'),
       h('button', { class: 'btn small', onclick: () => this.onZoom() }, 'Zoom'),
       h('button', { class: 'btn small', onclick: () => g.startRehearsal() }, 'Rehearse'),
       h('button', { class: 'btn primary', disabled: g.awaitingPlace, onclick: () => g.confirmPlace() }, def.kind === 'bomb' ? 'Detonate' : 'Place'),
@@ -583,12 +604,13 @@ export class UI {
     else if (g.phase === 'race' && p && p.status === 'dead') banner = `Eliminated. Spectating until the next round.`;
     else if (g.phase === 'race' && p && p.status === 'finished') banner = `Finished! ${(p.finishTick / 60).toFixed(2)}s · spectating`;
     else if (g.phase === 'build' && g.rehearsal) banner = 'Rehearsal: practice run, nothing here counts.';
+    else if ((g.phase === 'build' || g.phase === 'race') && !g.courseOpen && g.world?.map.buildRequired) banner = g.phase === 'race' ? 'Scouting run: there is no full route yet. Build one next round.' : 'No full route to the flag yet: build a way over the obstacle.';
     else if (g.phase === 'build' && window.innerHeight > 520) { const n = g.room!.members.filter(m => !m.spectator).length; banner = `${n} player${n === 1 ? '' : 's'} building · ${Math.ceil(left)}s left`; }
     e.banner.textContent = banner;
     e.banner.classList.toggle('hidden', !banner);
     e.banner.classList.toggle('danger', danger);
     // countdown
-    const cd = g.phase === 'countdown' ? String(Math.max(1, Math.ceil(left))) : g.phase === 'race' && g.timeLeft > (TIMERS.raceMs - 700) ? 'GO!' : '';
+    const cd = g.phase === 'countdown' ? String(Math.max(1, Math.ceil(left))) : g.phase === 'race' && g.race && g.timeLeft > ((g.race.opts.maxTicks / 60) * 1000 - 700) ? 'GO!' : '';
     e.count.textContent = cd;
     e.count.classList.toggle('hidden', !cd);
     // spectator controls

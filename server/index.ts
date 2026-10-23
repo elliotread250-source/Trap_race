@@ -6,9 +6,10 @@ import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { NET, PROTOCOL_VERSION, TICK_HZ, TIMERS, type Difficulty } from '../shared/config';
-import { MAPS } from '../shared/maps';
+import { MAP_LIST, MAPS, selectableMap } from '../shared/maps';
+import { baseNav } from '../shared/nav';
 import { parseClientMsg, type ServerMsg } from '../shared/protocol';
-import { Room, randomCode } from './room';
+import { Match, Room, randomCode } from './room';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -21,6 +22,9 @@ for (const [env, key] of [['DRAFT_MS', 'draftMs'], ['BUILD_MS', 'buildMs'], ['RA
   const v = Number(process.env[env]);
   if (v > 0) (TIMERS as Record<string, unknown>)[key] = v;
 }
+
+// test hook: force the draft pool (browser tests of specific items); unset in production
+if (process.env.TEST_POOL) Match.forcePool = process.env.TEST_POOL.split('|').map(r => r.split(','));
 
 const rooms = new Map<string, Room>();
 const tokens = new Map<string, { code: string; id: string }>();
@@ -103,7 +107,7 @@ function onMessage(c: Conn, data: string) {
     if (c.code) leave(c);
     if (msg.mode === 'practice') { send(c, { t: 'error', code: 'practice', msg: 'Solo practice runs in your browser' }); return; }
     const room = newRoom('online');
-    if (msg.mapId && MAPS[msg.mapId] && msg.mapId !== 'lab') room.mapId = msg.mapId;
+    if (msg.mapId && selectableMap(msg.mapId)) room.mapId = msg.mapId;
     const m = room.addHuman(profile.name, profile.skin);
     if ('error' in m) { send(c, { t: 'error', code: 'create', msg: m.error }); return; }
     tokens.set(m.token, { code: room.code, id: m.id });
@@ -265,6 +269,11 @@ setInterval(() => {
     for (const m of r.members) { if (m.token) tokens.delete(m.token); sockets.delete(`${code}:${m.id}`); }
   }
 }, 5);
+
+// Precompute the route graph of every clean map once (about 3 s in total) so no match pays for it mid-build.
+const warmT0 = Date.now();
+for (const m of MAP_LIST) baseNav(m.id);
+console.log(`route graphs ready for ${MAP_LIST.length} maps in ${Date.now() - warmT0} ms`);
 
 server.listen(PORT, HOST, () => {
   console.log(`Trap Race server on http://${HOST}:${PORT} (static: ${STATIC_DIR})`);

@@ -5,8 +5,9 @@ import { CELL, HAZARD, PHYS } from './config';
 import { circleRect, rectsOverlap, type Rect } from './grid';
 import { cellCenter, moverBaseRect, springDir, springRect, staticLethal, type StaticLethal } from './hazards';
 import { getItem } from './items';
+import { childCount, childId, childRect, motionOf, sweepOf } from './movers';
 import { IN_DOWN, IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
-import { C_ONEWAY, type World } from './world';
+import { C_ONEWAY, World, type PlacedObject } from './world';
 
 const W = PHYS.bodyW, H = PHYS.bodyH;
 export const FINISH = -1;
@@ -17,7 +18,25 @@ export interface NavNode { key: number; cx: number; cy: number; x: number; y: nu
 export interface NavEdge {
   from: number; to: number; frames: number; inputs: Uint8Array; path: Int16Array; kind: string;
   bbox: Rect; wallJumps: number;
+  /** timed edges (moving platforms involved): valid only when started on a tick t with t % period === phase */
+  phase?: number; period?: number;
 }
+
+/**
+ * Riding a kinematic platform child is a graph node of its own. Keys are stable across placements: they come from the
+ * object's numeric id and the child index, never from list positions.
+ */
+export const MOVER_KEY_BASE = 1 << 24;
+export const isMoverKey = (k: number) => k >= MOVER_KEY_BASE;
+const idNum = (id: string) => { const n = Number(id.slice(1)); return Number.isFinite(n) ? n : 0; };
+export function moverKey(o: PlacedObject, child: number) { return MOVER_KEY_BASE + idNum(o.id) * 4 + child; }
+
+/** Departure ticks sampled for timed edges from standing spots and from a ridden platform. */
+const TIMED_STEP = 32, RIDE_STEP = 32, MAX_SAMPLES = 12;
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+const lcm = (a: number, b: number) => (a / gcd(a, b)) * b;
+
+interface KinChild { o: PlacedObject; child: number; id: string; key: number; period: number; box: Rect; envIdx: number; poses: Float64Array }
 
 type Ctrl = (f: number, b: Body) => number;
 
@@ -63,6 +82,12 @@ export class Prober {
   readonly springs: { r: Rect; dir: { x: number; y: number } }[] = [];
   readonly movers: Mover[] = [];
   readonly env: PhysEnv;
+  /** kinematic platform children, in the same order as the race sim's kinematic movers */
+  readonly kin: KinChild[] = [];
+  /** 1 where a kinematic platform's lane is (no standing spots there; anything crossing it is timed) */
+  readonly lane: Uint8Array;
+  private timedEnv: PhysEnv | null = null;
+  private rideSafe = new Map<number, boolean>();
   steps = 0;
   /** union of every probe's swept area since the last reset (failed probes included) */
   sweep = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -81,6 +106,79 @@ export class Prober {
       world, isSolid: (x, y) => world.solidCell(x, y), movers: this.movers, speedMul: 1, jumpMul: 1,
       accel: holes.length ? (b: Body) => holeAccel(world, holes, b, (a, c, d, e) => staticRayBlocked(world, a, c, d, e)) : undefined,
     };
+    this.lane = new Uint8Array(world.w * world.h);
+    for (const o of world.kinematic) {
+      const sw = sweepOf(o);
+      for (const [x, y] of sw.sweep) if (world.inBounds(x, y)) this.lane[world.idx(x, y)] = 1;
+      const period = motionOf(o).period;
+      for (let i = 0; i < childCount(o); i++) {
+        // pose table over one cycle: probes look poses up instead of recomputing trig every frame
+        const poses = new Float64Array(period * 4);
+        for (let t = 0; t < period; t++) { const r = childRect(o, i, t); poses.set([r.x, r.y, r.w, r.h], t * 4); }
+        this.kin.push({ o, child: i, id: childId(o, i), key: moverKey(o, i), period, box: sw.bbox, envIdx: this.movers.length + this.kin.length, poses });
+      }
+    }
+    if (this.kin.length) {
+      const movers = [...this.movers, ...this.kin.map(() => ({ x: 0, y: 0, w: 0, h: 0, dx: 0, dy: 0 }))];
+      this.timedEnv = { ...this.env, movers };
+    }
+  }
+
+  kinByKey(key: number): KinChild | undefined { return this.kin.find(k => k.key === key); }
+
+  /** Put every kinematic child at its pose for tick t (rect at t, displacement since t-1). */
+  private setTick(t: number) {
+    const ms = this.timedEnv!.movers;
+    for (const k of this.kin) {
+      const P = k.period, a = (((t % P) + P) % P) * 4, b = ((((t - 1) % P) + P) % P) * 4, q = k.poses;
+      const m = ms[k.envIdx];
+      m.x = q[a]; m.y = q[a + 1]; m.w = q[a + 2]; m.h = q[a + 3]; m.dx = q[a] - q[b]; m.dy = q[a + 1] - q[b + 1]; m.id = k.id;
+    }
+  }
+
+  /** Does a recorded path ever put the body into a platform lane? */
+  touchesLane(path: Int16Array): boolean {
+    const w = this.world;
+    for (let i = 0; i < path.length; i += 2) {
+      const x = path[i], y = path[i + 1];
+      for (const [px, py] of [[x, y], [x + W - 1, y], [x, y + H - 1], [x + W - 1, y + H - 1]]) {
+        const cx = Math.floor(px / CELL), cy = Math.floor(py / CELL);
+        if (w.inBounds(cx, cy) && this.lane[cy * w.w + cx]) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Kinematic children whose lane is within jumping or dropping range of a pixel point. */
+  kinNear(x: number, y: number): KinChild[] {
+    return this.kin.filter(k => x > k.box.x - 6 * CELL && x < k.box.x + k.box.w + 6 * CELL && y > k.box.y - 9 * CELL && y < k.box.y + k.box.h + 3 * CELL);
+  }
+
+  periodOf(ks: KinChild[]): number { return ks.reduce((a, k) => lcm(a, k.period), 1); }
+
+  /** Can a rider stand centred on this child for a whole cycle without being shoved off or touching a lethal shape? */
+  canRide(k: KinChild): boolean {
+    const hit = this.rideSafe.get(k.key);
+    if (hit !== undefined) return hit;
+    const b = this.rideStart(k, 0, 0);
+    const P = this.periodOf(this.kinNear(b.x, b.y).concat(k));
+    let ok = true;
+    for (let f = 0; f < P && ok; f++) {
+      this.setTick(f + 1);
+      stepBody(b, 0, this.timedEnv!);
+      this.steps++;
+      if (!b.grounded || this.timedEnv!.movers[b.groundMover]?.id !== k.id || this.lethalAt(b.x, b.y)) ok = false;
+    }
+    this.rideSafe.set(k.key, ok);
+    return ok;
+  }
+
+  /** A rider standing at the centre of a child's top at tick t. */
+  rideStart(k: KinChild, t: number, offset: number): Body {
+    const r = childRect(k.o, k.child, t);
+    const b = newBody(r.x + r.w / 2 - W / 2 + offset, r.y - H);
+    b.grounded = true; b.groundMover = k.envIdx; b.coyote = PHYS.coyoteTime;
+    return b;
   }
 
   isNodeCell(cx: number, cy: number): boolean {
@@ -90,6 +188,7 @@ export class Prober {
     const below = w.coll[w.idx(cx, cy + 1)];
     const floor = w.solidCell(cx, cy + 1) || (below === C_ONEWAY && w.collDir[w.idx(cx, cy + 1)] === 0);
     if (!floor) return false;
+    if (this.lane[cy * w.w + cx]) return false; // a platform sweeps through here: nowhere to wait safely
     // head room: the cell above may be solid only if the body still fits (body is shorter than a cell)
     const n = this.nodeAt(cx, cy);
     return !this.lethalAt(n.x, n.y);
@@ -106,6 +205,19 @@ export class Prober {
     return false;
   }
 
+  /** One unverified run of a primitive (robustness is checked later, only for the edges worth keeping). */
+  private once(start: NavNode, ctrl: Ctrl, maxFrames: number, kind: string): NavEdge | null { return this.runOnce(start, ctrl, maxFrames, kind, 0); }
+
+  /** The same inputs must still reach the same place from slightly off-centre starts. */
+  private robust(start: NavNode, e: NavEdge): boolean {
+    for (const off of ROBUST_OFFSETS) {
+      const replay: Ctrl = f => (f < e.inputs.length ? e.inputs[f] : 0);
+      const r = this.runOnce(start, replay, e.frames + 90, e.kind, off);
+      if (!r || r.to !== e.to) return false;
+    }
+    return true;
+  }
+
   /** Run a primitive and keep it only if the same inputs still reach the same place from slightly off-centre starts. */
   run(start: NavNode, ctrl: Ctrl, maxFrames: number, kind: string): NavEdge | null {
     const e = this.runOnce(start, ctrl, maxFrames, kind, 0);
@@ -118,9 +230,30 @@ export class Prober {
     return e;
   }
 
-  private runOnce(start: NavNode, ctrl: Ctrl, maxFrames: number, kind: string, offset: number): NavEdge | null {
-    const b = newBody(start.x + offset, start.y);
-    b.grounded = true; b.coyote = PHYS.coyoteTime;
+  /**
+   * Timed version of run(): the same primitive started on tick `tau` with every kinematic platform at its real pose for
+   * each frame. `from` is a standing node or a ridden child (rider starts centred on it). Robust to ±3 px like run().
+   */
+  runTimed(from: NavNode | KinChild, ctrl: Ctrl, maxFrames: number, kind: string, tau: number): NavEdge | null {
+    const e = this.runOnce(from, ctrl, maxFrames, kind, 0, tau);
+    if (!e) return null;
+    for (const off of ROBUST_OFFSETS) {
+      const replay: Ctrl = f => (f < e.inputs.length ? e.inputs[f] : 0);
+      const r = this.runOnce(from, replay, e.frames + 90, kind, off, tau);
+      if (!r || r.to !== e.to) return null;
+    }
+    return e;
+  }
+
+  private runOnce(start: NavNode | KinChild, ctrl: Ctrl, maxFrames: number, kind: string, offset: number, tau = -1): NavEdge | null {
+    const timed = tau >= 0 && !!this.timedEnv;
+    const env = timed ? this.timedEnv! : this.env;
+    const riding = 'envIdx' in start;
+    let b: Body;
+    if (riding) { this.setTick(tau); b = this.rideStart(start, tau, offset); }
+    else { b = newBody(start.x + offset, start.y); b.grounded = true; b.coyote = PHYS.coyoteTime; }
+    const fromKey = riding ? start.key : start.key;
+    const legacy = this.movers.length;
     const inputs = new Uint8Array(maxFrames);
     const path = new Int16Array(maxFrames * 2);
     let minX = b.x, minY = b.y, maxX = b.x, maxY = b.y;
@@ -133,7 +266,8 @@ export class Prober {
     for (let f = 0; f < maxFrames; f++) {
       const inp = ctrl(f, b);
       inputs[f] = inp;
-      stepBody(b, inp, this.env);
+      if (timed) this.setTick(tau + f + 1);
+      stepBody(b, inp, env);
       this.steps++;
       if (b.wallJumped) wallJumps++;
       if (springCd > 0) springCd--;
@@ -151,13 +285,20 @@ export class Prober {
       const bbox = () => ({ x: minX - CELL, y: minY - CELL, w: maxX - minX + W + 2 * CELL, h: maxY - minY + H + 2 * CELL });
       if (b.x < fin.x + fin.w && b.x + W > fin.x && b.y < fin.y + fin.h && b.y + H > fin.y) {
         done();
-        return { from: start.key, to: FINISH, frames: f + 1, inputs: inputs.slice(0, f + 1), path: path.slice(0, (f + 1) * 2), kind, bbox: bbox(), wallJumps };
+        return { from: fromKey, to: FINISH, frames: f + 1, inputs: inputs.slice(0, f + 1), path: path.slice(0, (f + 1) * 2), kind, bbox: bbox(), wallJumps };
+      }
+      if (timed && f > 3 && b.grounded && b.groundMover >= legacy) {
+        // landed on a moving platform child: boarding (or transferring) edge into its riding node
+        const k = this.kin[b.groundMover - legacy];
+        if (riding && k.key === fromKey) { if (f > 40) { done(); return null; } continue; }
+        done();
+        return { from: fromKey, to: k.key, frames: f + 1, inputs: inputs.slice(0, f + 1), path: path.slice(0, (f + 1) * 2), kind: 'board', bbox: bbox(), wallJumps };
       }
       if (f > 3 && b.grounded && Math.abs(b.vx) < 1 && b.groundMover < 0) {
         const land = this.landingNode(b);
         done();
-        if (land === null || land === start.key) return null;
-        return { from: start.key, to: land, frames: f + 1, inputs: inputs.slice(0, f + 1), path: path.slice(0, (f + 1) * 2), kind, bbox: bbox(), wallJumps };
+        if (land === null || land === fromKey) return null;
+        return { from: fromKey, to: land, frames: f + 1, inputs: inputs.slice(0, f + 1), path: path.slice(0, (f + 1) * 2), kind, bbox: bbox(), wallJumps };
       }
     }
     done();
@@ -175,18 +316,25 @@ export class Prober {
 
   /** All movement primitives from a node, deduplicated to the fastest edge per destination. */
   edgesFrom(n: NavNode): NavEdge[] {
-    const out = new Map<number, NavEdge>();
+    // every primitive runs once; only the cheapest candidate per destination pays for the ±3 px robustness replays
+    const cands = new Map<number, NavEdge[]>();
+    const laneHits: NavEdge[] = [];
     const add = (e: NavEdge | null) => {
       if (!e) return;
-      const cur = out.get(e.to);
-      const cost = e.frames + e.wallJumps * 6;
-      if (!cur || cost < cur.frames + cur.wallJumps * 6) out.set(e.to, e);
+      // a path through a platform lane only works at some times: re-checked below as a timed edge
+      if (this.kin.length && this.touchesLane(e.path)) { laneHits.push(e); return; }
+      const list = cands.get(e.to);
+      if (list) list.push(e); else cands.set(e.to, [e]);
     };
     const w = this.world;
+    const wallNear = (dir: number) => {
+      for (let k = 1; k <= 3; k++) for (let dy = -3; dy <= 0; dy++) if (w.solidCell(n.cx + dir * k, n.cy + dy) && w.inBounds(n.cx + dir * k, n.cy + dy)) return true;
+      return false;
+    };
     // walk one cell (stops on the neighbour, or walks off an edge and falls)
     for (const dir of [-1, 1]) {
       const tx = n.x + dir * CELL;
-      add(this.run(n, (f, b) => {
+      add(this.once(n, (f, b) => {
         if (b.grounded && Math.abs(b.x - tx) < 1.5 && f > 0) return 0;
         if (!b.grounded) return f < 14 ? (dir < 0 ? IN_LEFT : IN_RIGHT) : 0;
         const dx = tx - b.x;
@@ -195,50 +343,148 @@ export class Prober {
         return dx < 0 ? IN_LEFT : IN_RIGHT;
       }, 150, 'walk'));
       // walk off and keep steering (long drop)
-      add(this.run(n, (f, b) => (f > 4 && b.grounded ? 0 : dir < 0 ? IN_LEFT : IN_RIGHT), 200, 'walk'));
+      add(this.once(n, (f, b) => (f > 4 && b.grounded ? 0 : dir < 0 ? IN_LEFT : IN_RIGHT), 200, 'walk'));
     }
     // jumps
-    const jumpCtrl = (dir: number, sprint: boolean, run: number, mode: 'hold' | 'stop' | 'rev' | 'hop', k: number): Ctrl => (f, b) => {
-      const d = dir < 0 ? IN_LEFT : dir > 0 ? IN_RIGHT : 0;
-      const rd = dir < 0 ? IN_RIGHT : dir > 0 ? IN_LEFT : 0;
-      const sp = sprint ? IN_SPRINT : 0;
-      if (f < run) return d | sp;
-      const jf = f - run;
-      const holdJ = mode === 'hop' ? jf < 7 : jf < 34;
-      let mv = d;
-      if (mode === 'stop' && jf >= k) mv = 0;
-      if (mode === 'rev' && jf >= k) mv = rd;
-      if (b.grounded && jf > 3) mv = 0;
-      return mv | sp | (holdJ ? IN_JUMP : 0);
-    };
-    add(this.run(n, jumpCtrl(0, false, 0, 'hold', 0), 120, 'jump'));
+    add(this.once(n, jumpCtrl(0, false, 0, 'hold', 0), 120, 'jump'));
     for (const dir of [-1, 1]) {
       for (const sprint of [false, true]) {
         for (const run of [0, 12]) {
-          add(this.run(n, jumpCtrl(dir, sprint, run, 'hold', 0), 140, 'jump'));
-          add(this.run(n, jumpCtrl(dir, sprint, run, 'stop', 14), 140, 'jump'));
-          add(this.run(n, jumpCtrl(dir, sprint, run, 'rev', 22), 140, 'jump'));
+          add(this.once(n, jumpCtrl(dir, sprint, run, 'hold', 0), 140, 'jump'));
+          add(this.once(n, jumpCtrl(dir, sprint, run, 'stop', 14), 140, 'jump'));
+          add(this.once(n, jumpCtrl(dir, sprint, run, 'rev', 22), 140, 'jump'));
         }
       }
-      add(this.run(n, jumpCtrl(dir, false, 0, 'hop', 0), 100, 'jump'));
-      add(this.run(n, jumpCtrl(dir, false, 0, 'stop', 6), 120, 'jump'));
-      // same-wall climb: jump at the wall, wall-jump on every recontact, steer back to the same wall
-      add(this.run(n, climbCtrl(dir, 'same'), 600, 'climb'));
-      // shaft zig-zag between facing walls
-      add(this.run(n, climbCtrl(dir, 'zig'), 600, 'climb'));
-      // climb then hop off the top away from the wall
-      add(this.run(n, climbCtrl(dir, 'sameSprint'), 600, 'climb'));
+      add(this.once(n, jumpCtrl(dir, false, 0, 'hop', 0), 100, 'jump'));
+      add(this.once(n, jumpCtrl(dir, false, 0, 'stop', 6), 120, 'jump'));
+      if (wallNear(dir)) {
+        // same-wall climb: jump at the wall, wall-jump on every recontact, steer back to the same wall
+        add(this.once(n, climbCtrl(dir, 'same'), 600, 'climb'));
+        // shaft zig-zag between facing walls
+        if (wallNear(-dir)) add(this.once(n, climbCtrl(dir, 'zig'), 600, 'climb'));
+        // climb then hop off the top away from the wall
+        add(this.once(n, climbCtrl(dir, 'sameSprint'), 600, 'climb'));
+      }
     }
     // drop through a one-way floor
     const below = w.inBounds(n.cx, n.cy + 1) ? w.coll[w.idx(n.cx, n.cy + 1)] : 0;
     if (below === C_ONEWAY) {
       for (const dir of [0, -1, 1]) {
         const d = dir < 0 ? IN_LEFT : dir > 0 ? IN_RIGHT : 0;
-        add(this.run(n, f => (f < 2 ? IN_DOWN | IN_JUMP : f > 10 ? d : 0), 160, 'drop'));
+        add(this.once(n, f => (f < 2 ? IN_DOWN | IN_JUMP : f > 10 ? d : 0), 160, 'drop'));
       }
     }
-    return [...out.values()];
+    const edges: NavEdge[] = [];
+    for (const list of cands.values()) {
+      list.sort((a, b) => a.frames + a.wallJumps * 6 - (b.frames + b.wallJumps * 6));
+      const ok = list.find(e => this.robust(n, e));
+      if (ok) edges.push(ok);
+    }
+    if (this.kin.length) edges.push(...this.timedFrom(n, laneHits));
+    return edges;
   }
+
+  /**
+   * Timed edges from a standing node: every lane-crossing primitive replayed, plus boarding jumps, at departure ticks
+   * sampled over the nearby platforms' common period. Kept per (destination, phase) when robust to ±3 px.
+   */
+  private timedFrom(n: NavNode, laneHits: NavEdge[]): NavEdge[] {
+    const near = this.kinNear(n.x, n.y);
+    if (!near.length && !laneHits.length) return [];
+    const P = this.periodOf(near.length ? near : this.kin);
+    // replay only the cheapest lane-crossing primitive per destination
+    const byTo = new Map<number, NavEdge>();
+    for (const e of laneHits) { const c = byTo.get(e.to); if (!c || e.frames < c.frames) byTo.set(e.to, e); }
+    const ctrls: [Ctrl, number, string][] = [...byTo.values()].map(e => [(f: number) => (f < e.inputs.length ? e.inputs[f] : 0), e.frames + 60, e.kind] as [Ctrl, number, string]);
+    if (near.length) {
+      const dirs = new Set(near.map(k => Math.sign(k.box.x + k.box.w / 2 - (n.x + W / 2)) || 1));
+      for (const d of dirs) for (const c of boardCtrls(d)) ctrls.push(c);
+      ctrls.push([jumpCtrl(0, false, 0, 'hold', 0), 120, 'jump']);
+    }
+    return this.collectTimed(n, ctrls, P, Math.max(TIMED_STEP, Math.ceil(P / MAX_SAMPLES / 8) * 8));
+  }
+
+  /** Alight edges from riding a child: a centred rider jumps, hops or walks off at sampled ticks of the cycle. */
+  edgesFromRide(key: number): NavEdge[] {
+    const k = this.kinByKey(key);
+    if (!k || !this.canRide(k)) return [];
+    const r = childRect(k.o, k.child, 0);
+    const P = this.periodOf(this.kinNear(r.x, r.y).concat(k));
+    const ctrls = rideCtrls();
+    // climbing off a platform onto a wall (a lift up to a cliff face) only where a wall is actually beside the lane
+    const w = this.world;
+    const bx0 = Math.floor(k.box.x / CELL), bx1 = Math.floor((k.box.x + k.box.w - 1) / CELL), by0 = Math.floor(k.box.y / CELL) - 4, by1 = Math.floor((k.box.y + k.box.h - 1) / CELL);
+    for (const dir of [-1, 1]) {
+      let wall = false;
+      for (let i = 1; i <= 3 && !wall; i++) for (let y = by0; y <= by1 && !wall; y++) { const x = dir < 0 ? bx0 - i : bx1 + i; if (w.inBounds(x, y) && w.solidCell(x, y)) wall = true; }
+      if (wall) ctrls.push([climbCtrl(dir, 'same'), 500, 'climb']);
+    }
+    return this.collectTimed(k, ctrls, P, Math.max(RIDE_STEP, Math.ceil(P / MAX_SAMPLES / 8) * 8));
+  }
+
+  private collectTimed(from: NavNode | KinChild, ctrls: [Ctrl, number, string][], P: number, stepT: number): NavEdge[] {
+    const out: NavEdge[] = [];
+    for (let tau = 0; tau < P; tau += stepT) {
+      // one run each, then robustness only for the cheapest candidate per destination at this departure tick
+      const cands = new Map<number, NavEdge[]>();
+      for (const [ctrl, max, kind] of ctrls) {
+        const e = this.runOnce(from, ctrl, max, kind, 0, tau);
+        if (!e) continue;
+        const list = cands.get(e.to);
+        if (list) list.push(e); else cands.set(e.to, [e]);
+      }
+      for (const list of cands.values()) {
+        list.sort((a, b) => a.frames + a.wallJumps * 6 - (b.frames + b.wallJumps * 6));
+        const ok = list.find(e => this.robustTimed(from, e, tau));
+        if (ok) { ok.phase = tau; ok.period = P; out.push(ok); }
+      }
+    }
+    return out;
+  }
+
+  private robustTimed(from: NavNode | KinChild, e: NavEdge, tau: number): boolean {
+    for (const off of ROBUST_OFFSETS) {
+      const replay: Ctrl = f => (f < e.inputs.length ? e.inputs[f] : 0);
+      const r = this.runOnce(from, replay, e.frames + 90, e.kind, off, tau);
+      if (!r || r.to !== e.to) return false;
+    }
+    return true;
+  }
+}
+
+function jumpCtrl(dir: number, sprint: boolean, run: number, mode: 'hold' | 'stop' | 'rev' | 'hop', k: number): Ctrl {
+  return (f, b) => {
+    const d = dir < 0 ? IN_LEFT : dir > 0 ? IN_RIGHT : 0;
+    const rd = dir < 0 ? IN_RIGHT : dir > 0 ? IN_LEFT : 0;
+    const sp = sprint ? IN_SPRINT : 0;
+    if (f < run) return d | sp;
+    const jf = f - run;
+    const holdJ = mode === 'hop' ? jf < 7 : jf < 34;
+    let mv = d;
+    if (mode === 'stop' && jf >= k) mv = 0;
+    if (mode === 'rev' && jf >= k) mv = rd;
+    if (b.grounded && jf > 3) mv = 0;
+    return mv | sp | (holdJ ? IN_JUMP : 0);
+  };
+}
+
+/** Primitives tried toward a moving platform from a standing spot (in addition to replaying lane-crossing edges). */
+function boardCtrls(dir: number): [Ctrl, number, string][] {
+  const out: [Ctrl, number, string][] = [];
+  for (const sprint of [false, true]) out.push([jumpCtrl(dir, sprint, 0, 'hold', 0), 140, 'jump'], [jumpCtrl(dir, sprint, 0, 'stop', 14), 140, 'jump']);
+  out.push([(f, b) => (f > 4 && b.grounded ? 0 : dir < 0 ? IN_LEFT : IN_RIGHT), 160, 'walk']);
+  return out;
+}
+
+/** Ways off a ridden platform: jumps both ways (walking pace and sprinting, held or stopped), hops, a straight jump, walking off. */
+function rideCtrls(): [Ctrl, number, string][] {
+  const out: [Ctrl, number, string][] = [[jumpCtrl(0, false, 0, 'hold', 0), 120, 'jump']];
+  for (const dir of [-1, 1]) {
+    for (const sprint of [false, true]) out.push([jumpCtrl(dir, sprint, 0, 'hold', 0), 150, 'jump'], [jumpCtrl(dir, sprint, 0, 'stop', 16), 150, 'jump']);
+    out.push([jumpCtrl(dir, false, 0, 'hop', 0), 110, 'jump']);
+    out.push([(f, b) => (f > 4 && b.grounded && b.groundMover < 0 ? 0 : dir < 0 ? IN_LEFT | IN_SPRINT : IN_RIGHT | IN_SPRINT), 160, 'walk']);
+  }
+  return out;
 }
 
 function climbCtrl(dir: number, mode: 'same' | 'zig' | 'sameSprint'): Ctrl {
@@ -257,6 +503,11 @@ function climbCtrl(dir: number, mode: 'same' | 'zig' | 'sameSprint'): Ctrl {
     if (b.grounded && f > 10) return 0;
     return inp;
   };
+}
+
+function unionRect(a: Rect, b: Rect): Rect {
+  const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y);
+  return { x: x0, y: y0, w: Math.max(a.x + a.w, b.x + b.w) - x0, h: Math.max(a.y + a.h, b.y + b.h) - y0 };
 }
 
 /** Lazily built graph over standing nodes. */
@@ -278,19 +529,52 @@ export class NavGraph {
   }
   cachedNodes() { return this.cache.size; }
 
-  node(key: number): NavNode { const w = this.world.w; return this.prober.nodeAt(key % w, Math.floor(key / w)); }
+  /** Compute edges for every standing spot on the map, reachable from the spawn or not. */
+  warmAll() {
+    const w = this.world;
+    for (let cy = 0; cy < w.h; cy++) for (let cx = 0; cx < w.w; cx++) if (this.prober.isNodeCell(cx, cy)) this.edges(cy * w.w + cx);
+  }
+
+  node(key: number): NavNode {
+    if (isMoverKey(key)) {
+      // riding node: its position at GO (it moves; bots track the live platform instead)
+      const k = this.prober.kinByKey(key);
+      const r = k ? childRect(k.o, k.child, 0) : { x: 0, y: 0, w: 0, h: 0 };
+      return { key, cx: -1, cy: -1, x: r.x + r.w / 2 - W / 2, y: r.y - H };
+    }
+    const w = this.world.w; return this.prober.nodeAt(key % w, Math.floor(key / w));
+  }
+
+  /** Copy every cached edge of a graph built on an identical world (the clean base map). */
+  static fromBase(base: NavGraph, world: World): NavGraph {
+    const g = new NavGraph(world);
+    for (const [k, v] of base.cache) g.cache.set(k, v);
+    return g;
+  }
 
   edges(key: number): NavEdge[] {
     let e = this.cache.get(key);
     if (!e) {
       const p = this.prober;
       p.sweep = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
-      const n = this.node(key);
-      const isNode = p.isNodeCell(n.cx, n.cy);
-      const edges = isNode ? p.edgesFrom(n) : [];
-      const sw = p.sweep;
-      // a non-node can become a node when something is placed under or removed from it
-      const sweep = isNode && sw.x0 < Infinity ? { x: sw.x0, y: sw.y0, w: sw.x1 - sw.x0, h: sw.y1 - sw.y0 } : { x: n.x - CELL, y: n.y - CELL, w: W + 2 * CELL, h: H + 3 * CELL };
+      let edges: NavEdge[];
+      let sweep: Rect;
+      if (isMoverKey(key)) {
+        edges = p.edgesFromRide(key);
+        const k = p.kinByKey(key);
+        const sw = p.sweep;
+        const box = k ? k.box : { x: 0, y: 0, w: 0, h: 0 };
+        sweep = sw.x0 < Infinity ? unionRect({ x: sw.x0, y: sw.y0, w: sw.x1 - sw.x0, h: sw.y1 - sw.y0 }, box) : box;
+      } else {
+        const n = this.node(key);
+        const isNode = p.isNodeCell(n.cx, n.cy);
+        edges = isNode ? p.edgesFrom(n) : [];
+        const sw = p.sweep;
+        // a non-node can become a node when something is placed under or removed from it
+        sweep = isNode && sw.x0 < Infinity ? { x: sw.x0, y: sw.y0, w: sw.x1 - sw.x0, h: sw.y1 - sw.y0 } : { x: n.x - CELL, y: n.y - CELL, w: W + 2 * CELL, h: H + 3 * CELL };
+        // timed edges depend on the platforms near this node: any change to them invalidates the entry
+        if (isNode) for (const k of p.kinNear(n.x, n.y)) sweep = unionRect(sweep, k.box);
+      }
       e = { edges, sweep };
       this.cache.set(key, e);
     }
@@ -347,6 +631,18 @@ export class NavGraph {
     while (k !== from) { const e = prev.get(k); if (!e) break; out.unshift(e); k = e.from; }
     return out;
   }
+}
+
+/**
+ * Every standing spot of a clean base map, computed once per process and shared by every match on that map (matches
+ * copy it with NavGraph.fromBase, then derive from it as the course changes). Without this, the first placement that
+ * opens a new part of a large map pays for exploring it.
+ */
+const baseGraphs = new Map<string, NavGraph>();
+export function baseNav(mapId: string): NavGraph {
+  let g = baseGraphs.get(mapId);
+  if (!g) { g = new NavGraph(new World(mapId)); g.warmAll(); baseGraphs.set(mapId, g); }
+  return g;
 }
 
 /** Placement check: does at least one sampled route from spawn to flag survive? */

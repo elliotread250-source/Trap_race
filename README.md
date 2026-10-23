@@ -18,7 +18,7 @@ npm run typecheck
 
 To play on two devices, run `npm run build && npm start` on one machine and open `http://<that-machine's-LAN-IP>:8080` on both. One player clicks Create Room and shares the code or the invite link; the other uses Join Room by Code. In production both just open the deployed URL.
 
-Useful tools: `npx tsx scripts/map-ascii.ts rooftop` prints a map with its reachable standing spots and best route; `npx tsx scripts/bot-race.ts medium 4` races bots on every unmodified map; `npx tsx scripts/bot-bench.ts 4 medium` plays full bot matches and reports finish rates and placement validation cost.
+Useful tools: `npx tsx scripts/map-ascii.ts rooftop` prints a map with its reachable standing spots and best route; `npx tsx scripts/map-audit.ts rooftop 3` searches thousands of single and accumulated construction placements near spawn and flag for shortcuts; `npx tsx scripts/bot-race.ts medium 4` races bots on every unmodified map; `npx tsx scripts/bot-race-large.ts 3` times bots on the large maps; `npx tsx scripts/bot-bench.ts 4 medium` plays full bot matches and reports finish rates and placement validation cost; `npx tsx scripts/profile-movers.ts mountain 6 4` profiles a six-player race with shuttles and wheels. `node tests/e2e/movers.mjs` runs the two-browser checks for the moving platforms (needs `npm run build`).
 
 ## Controls
 
@@ -38,7 +38,7 @@ Every binding can be changed in Settings. On phones and tablets: hold ◀/▶ to
 
 ## Match rules
 
-Default 8 rounds (host can pick 3–12). Phases are server-owned: lobby → draft (20 s) → build (35 s) → countdown (3 s) → race (90 s) → results → next round → match results. Draft and build end early when everyone is done.
+Default 8 rounds (host can pick 3–12). Phases are server-owned: lobby → draft (20 s) → build (35 s) → countdown (3 s) → race (90 s; 120 s on the two large maps) → results → next round → match results. Draft and build end early when everyone is done.
 
 **Draft.** One shared pool of 5–10 individual cards per round, always at least one per participant, balanced across construction, hazards, utilities and demolition. The first valid claim on a card wins it atomically; everyone gets exactly one item. On timeout the server deals a seeded random leftover. After a round where nobody finished (or if the route check flags the course), the next pool is guaranteed a bomb. Bombs also turn up every few rounds.
 
@@ -64,20 +64,56 @@ Match winner: highest score, then most finishes, then lowest total time across s
 
 All sizes are grid cells. Every item rotates in quarter turns except the tripod sniper and the black hole.
 
-- **Construction:** blocks 1×1, 1×2, 2×2, 2×3, 3×3; planks 1 thick and 3, 5 or 7 long; an L block (5 cells in a 3×3 box, inner corner genuinely empty); stairs; one-way platform; spring pad; conveyor; moving platform (stops short of solids and safety zones); crumbling platform.
+- **Construction:** blocks 1×1, 1×2, 2×2, 2×3, 3×3; planks 1 thick and 3, 5 or 7 long; an L block (5 cells in a 3×3 box, inner corner genuinely empty); stairs; one-way platform; spring pad; conveyor; moving platform (stops short of solids, safety zones and reserved lanes); crumbling platform; Shuttle Block; Ferris Wheel (below).
+- **Shuttle Block:** one solid 2×1 block (1×2 after a quarter turn) that slides 3 cells along its arrow and back, cosine-eased so it slows to a stop at each end. One card, one platform.
+- **Ferris Wheel:** one card places a pivot (no collision, also the bomb handle) and four solid 2×1 gondolas 90° apart that orbit it and stay level. Odd rotations stand the gondolas upright (1×2); F flips clockwise/counter-clockwise. Pivot, spokes and the space between gondolas are genuinely empty.
 - **Hazards:** spike strip; retracting spikes; saw rail; dart launcher; laser gate (beam stops at solids and safety zones); swinging axe; black hole (pull with falloff and caps, blocked by solids, lethal core); tripod sniper (must sit on a stationary solid block's top face, left or right facing, fires every 2.5 s of sim time, shots pierce players and stop at blocks); cannon (floats, gravity arc, stops at first player); crossbow (floats, constant-speed straight arrows that break on the first player, shield or not); barbed wire 1/2/3 (bolts to one block edge, unsupported segments are trimmed, lethal even while wall sliding).
 - **Utility:** coins (carry to the flag to bank; dropped where the carrier dies; reset to their placed spot next round); speed, jump, shield and slow-pulse stations (first collector each race, refill next race).
 - **Demolition:** bombs 1×1, 2×2, 3×3. Remove every player-built object touching the area (and snipers or wire bolted to them). Never touch map terrain or map wire. Removal is permanent for the match.
+
+### Moving platforms in detail
+
+Shuttles and wheels move as a pure function of race ticks since GO, stored on the placed object as its motion definition (`mv`: period, travel or radius, direction). The server sim, client prediction, rendering, bots and the route probe all evaluate the same function, so the four gondolas can't drift apart and every client agrees. Every race restarts them from their GO pose; during building they animate on a local clock, which never affects validity.
+
+| Setting (`MOVERS` in `shared/config.ts`) | Default | Why |
+| --- | --- | --- |
+| Shuttle travel | 3 cells | a 5-cell lane: long enough to ferry across a pit, short enough to read |
+| Shuttle round trip | 192 ticks (3.2 s) | peak speed ~141 px/s, below walking speed (220), easy to board |
+| Wheel radius | 3 cells (144 px) | gondolas are ≥204 px apart, never touch, and riders keep >100 px headroom under the next gondola |
+| Wheel lap | 480 ticks (8 s) | ~113 px/s along the orbit |
+| Rider headroom | 46 px above every pose | kept free of solids so riders are never crushed (body is 42 px) |
+| Inherited velocity | 0 px/s | jumping off keeps normal jump feel; riders move only by the platform's exact per-tick displacement |
+
+Placement validates the whole swept lane (every cell any body ever touches, from the real shapes, so the wheel's centre stays open) and the headroom band above it: no terrain, no items, no other lanes, no safety zones. The lane is then reserved against later placements, and solids can't go in the headroom. Nothing bolts onto moving platforms: wire and snipers are rejected with a reason. A platform that catches a player shoves them clear with a fixed policy (along its motion, onto its top, sideways, below), never into a solid and never with damage. Projectiles hit the moving bodies using relative motion (no tunnelling) and pass through pivots and spokes. Bombs hit a platform at its GO pose, which the build view freezes on while you hold a bomb; one hit on any gondola or the pivot removes the whole wheel with its lane and bodies.
+
+The route probe and the bots treat each platform child as a node: timed edges (board at a phase, ride, alight at a phase) are simulated against the real future poses at sampled departure ticks, and any ordinary move that crosses a lane is re-checked as a timed move. Bots wait at the right spot for the right tick, stay centred while riding, and jump off where the edge says.
 
 Projectiles collide with every solid (L blocks use their real cells), are absorbed at safety zones, and never damage the environment. The slow pulse halves timed traps only; snipers, arrows, cannonballs and black holes are unaffected, and lasers only have their off time stretched.
 
 ## Maps
 
-Rooftop Run, Factory Shift, Forest Heights and Frostline Ridge. Each has a protected start, a visible flag, a kill line below the map, build space everywhere, at least two route choices (for example the tower wall-climb or the fire escape on Rooftop Run) and only barbed wire as authored traps. Frostline Ridge has slippery blue ice. Map definitions are data in `shared/maps.ts`.
+Six maps. All run left to right with the flag at the far end; map traps are only barbed wire.
+
+| Map | Size (cells) | Character |
+| --- | --- | --- |
+| The Great Oak | 112 × 40 (large) | Meadow, bramble hollow, a giant oak you must build over, the glade and creek, the sunlit hill. |
+| Under the Mountain | 116 × 38 (large) | A peak fused to the sky; the route is a cave: crystal hall, rising gallery, glow lake, exit tunnel, valley. |
+| Rooftop Run | 72 × 28 | Rebuilt: low roofs east, the clock tower or its fire escape, then the high skyline to the flag. |
+| Factory Shift, Forest Heights, Frostline Ridge | 64 × 26 | Unchanged. |
+
+**Audit (Oct 2026).** Every existing map was 64 × 26. With the real movement (sprint, air steering, wall slides, unlimited same-wall jumps) and a search over every legal plank/block/stair placement near spawn and flag, one piece at a time and accumulated over three rounds (`scripts/map-audit.ts`): Rooftop Run's course looped back so the flag sat 8 cells across and 14 up from spawn, and one upright Plank 7 beside the left wall turned the 18.6 s course into a 5.2 s shaft climb (two planks: 4.5 s). Factory, Forest and Frost only allowed local savings of 5–9%. The rebuilt Rooftop allows 1–3%. On the large maps, no piece near spawn or flag opens a route on the Oak; the best piece on the Mountain saves 2%.
+
+**The Great Oak** is solid from canopy top to the bottom of the map, and its canopy overhangs the trunk: climbing the trunk ends under the leaves, and the canopy's outer face starts eight rows above the left branch. Building on the branch tip bridges it: one upright Plank 5 or 7, a Spring Pad or a vertical Shuttle does it alone; two Plank 3s or a 2×3 plus a 2×2 block also work. While there is no full route, the validator accepts any placement that doesn't cut players off from the furthest point they can reach (map stages, then air-path distance to the flag), every draft offers each player a building card, bots build toward the frontier, races are 45 s scouting runs, and no bomb is forced. Bounds, overlap and safety-zone rules still apply.
+
+**Under the Mountain**'s rock is one mass fused to the top of the world; a unit test proves there is no open-air path from start to flag once the cave interior is blocked, so there is no roof route or seam.
+
+Timers: bots finish Under the Mountain in ~21 s and the bridged Oak in ~28 s (medians, `scripts/bot-race-large.ts`), against 12–15 s on the standard maps, so the large maps get 120 s instead of 90 s.
+
+Map definitions are data in `shared/maps.ts` (the large maps use a small cell painter for organic shapes). Their art (parallax layers, materials, ambient life) is in `client/src/scenery.ts`; ambient life is capped, follows the particle setting, freezes with reduced motion and never collides.
 
 ## Bots
 
-Server-side bots draft, build and race through the same code paths as humans. They race by producing input bits for the same physics: they follow recorded movement primitives from the navigation graph with closed-loop steering, wait for timed hazards, take coin detours when greedy, and replan or blacklist an edge when stuck. Measured on unmodified maps (`scripts/bot-race.ts`, 6 bots per race, seeded): easy, medium and hard all finish 94–100%. On built-up courses from full bot matches, medium bots finished 19–50% of their races.
+Server-side bots draft, build and race through the same code paths as humans. They race by producing input bits for the same physics: they follow recorded movement primitives from the navigation graph with closed-loop steering, wait for timed hazards, take coin detours when greedy, and replan or blacklist an edge when stuck. Measured on unmodified maps (`scripts/bot-race.ts`, 6 bots per race, seeded): easy, medium and hard all finish 94–100%. On the large maps (`scripts/bot-race-large.ts`, 3 seeds × 6 bots): Under the Mountain 94–100%, the bridged Oak 89–100%. Across pits only a moving platform can cross (test arenas), bots finish 94–100% by boarding, riding and leaving shuttles and wheels. On built-up courses from full bot matches, medium bots finished 19–50% of their races.
 
 | Difficulty | Reaction | Hazard timing check | Mistakes/s | Route noise | Align tolerance | Coin greed | Risk tolerance |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -93,7 +129,7 @@ Server-side bots draft, build and race through the same code paths as humans. Th
 
 Networking: clients send sequenced input bits, never positions, deaths, finishes or scores. The server simulates at 60 Hz and sends snapshots at 20 Hz with the last processed input. The client predicts only its own movement with the shared physics, replays unacknowledged inputs on each snapshot, smooths small corrections, and interpolates everyone else about 100 ms behind. Messages are schema-checked, capped at 8 KB and rate limited. Reconnect tokens are random 144-bit values; a room code alone never grants an identity or host rights.
 
-**Limitations.** Rooms live in memory in one process. A redeploy or restart ends every active room, and the service must run as a single replica, since there's no cross-instance room coordination. Placement validation runs on the server's main thread (about 150–250 ms typical, up to ~600 ms on a crowded course), so very busy servers will see brief hitches during build phases. On phones and tablets the game plays in landscape with on-screen controls (verified in Chromium phone and tablet emulation with multi-touch, not yet on physical devices); portrait shows a rotate prompt. Moving platforms are treated as standing still at their start by the route check.
+**Limitations.** Rooms live in memory in one process. A redeploy or restart ends every active room, and the service must run as a single replica, since there's no cross-instance room coordination. Placement validation runs on the server's main thread (about 150–250 ms typical, up to ~600 ms on a crowded course), so very busy servers will see brief hitches during build phases. On phones and tablets the game plays in landscape with on-screen controls (verified in Chromium phone and tablet emulation with multi-touch, not yet on physical devices); portrait shows a rotate prompt. The legacy Moving Platform is still treated as standing still at its start by the route check (Shuttles and Wheels are fully timed). Validation on the large maps: ordinary pieces ~100–200 ms, a wheel up to ~0.8 s (timed edges); measured with 10 moving items on a large map: median 130–200 ms, max 711 ms. A six-player race with 22 moving bodies costs ~0.03 ms per sim tick plus ~0.02 ms for six bots (`scripts/profile-movers.ts`). The server precomputes every map's route graph at start-up (~3 s). Timed edges sample departures every 32+ ticks, so the probe can miss a route that needs a very precise moment (conservative).
 
 ## Credits
 

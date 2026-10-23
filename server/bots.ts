@@ -4,9 +4,10 @@ import { BOT_DIFFICULTY, CELL, DT, HAZARD, PHYS, TICK_HZ, type Difficulty } from
 import { circleRect, rectsOverlap, type Rect } from '../shared/grid';
 import { cellCenter, laserBeamRect, laserState, pendulumPos, rspikeState, sawPos } from '../shared/hazards';
 import { getItem, ITEMS, type ItemDef } from '../shared/items';
-import { FINISH, type NavEdge, type NavGraph } from '../shared/nav';
+import { FINISH, isMoverKey, moverKey, type NavEdge, type NavGraph } from '../shared/nav';
+import { childRect } from '../shared/movers';
 import { IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT } from '../shared/physics';
-import { checkPlacement, type PlaceRequest } from '../shared/placement';
+import { airDistance, checkPlacement, progressOf, validatePlacement, type PlaceRequest } from '../shared/placement';
 import type { Card } from '../shared/protocol';
 import type { RacePlayer, RaceSim } from '../shared/race';
 import { Rng } from '../shared/rng';
@@ -15,7 +16,7 @@ import { S_ICE, spikeStripPx, TERRAIN_ID, type World } from '../shared/world';
 const BW = PHYS.bodyW, BH = PHYS.bodyH;
 
 // ---------------- drafting
-export function botPickCard(cards: Card[], difficulty: Difficulty, rng: Rng, needDemolition: boolean, worldPlayerObjects: number): Card | null {
+export function botPickCard(cards: Card[], difficulty: Difficulty, rng: Rng, needDemolition: boolean, worldPlayerObjects: number, mustBuild = false): Card | null {
   const open = cards.filter(c => !c.by);
   if (!open.length) return null;
   const d = BOT_DIFFICULTY[difficulty];
@@ -26,6 +27,7 @@ export function botPickCard(cards: Card[], difficulty: Difficulty, rng: Rng, nee
     if (def.group === 'construction') w = 1.1 - d.hazardPlacement * 0.4;
     if (def.group === 'utility') w = def.kind === 'coin' ? 0.5 + d.coinGreed : 0.7;
     if (def.group === 'demolition') w = needDemolition ? 6 : worldPlayerObjects > 6 ? 0.6 : 0.15;
+    if (mustBuild) w = def.group === 'construction' ? 6 : 0.2; // nobody can finish until someone builds the crossing
     return w * (0.6 + rng.next() * 0.8);
   }) ?? open[0];
 }
@@ -111,6 +113,49 @@ export function botPlacementCandidates(world: World, nav: NavGraph, def: ItemDef
   return out;
 }
 
+/**
+ * Building on an unfinished course: try the piece around the furthest-forward reachable spots, keep the legal ones whose
+ * top reaches closest to the flag, then rank a handful by how far players can actually get afterwards (route probe).
+ */
+export function botBridgeCandidates(world: World, nav: NavGraph, def: ItemDef, rng: Rng, max = 5): PlaceRequest[] {
+  const air = airDistance(world);
+  const visited = [...nav.reach(false).visited].filter(k => k >= 0 && k < world.w * world.h);
+  const d = (k: number) => air[k];
+  const frontier = visited.sort((a, b) => d(a) - d(b)).slice(0, 16);
+  const cheap: { req: PlaceRequest; h: number }[] = [];
+  const seen = new Set<string>();
+  for (const k of frontier) {
+    const cx = k % world.w, cy = Math.floor(k / world.w);
+    for (let dx = -5; dx <= 4; dx++) for (let dy = -8; dy <= 1; dy++) for (const rot of def.rotatable ? [0, 1, 3] : [0]) {
+      const req = { item: def.id, x: cx + dx, y: cy + dy, rot, variant: 0 };
+      const key = `${req.x},${req.y},${rot}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const c = checkPlacement(world, req);
+      if (!c.ok) continue;
+      // it must start where players can get to it: resting at, or one jump above, this reachable spot
+      const bottom = Math.max(...c.cells.map(cc => cc[1]));
+      if (bottom < cy - 2 || bottom > cy + 1 || Math.min(...c.cells.map(cc => Math.abs(cc[0] - cx))) > 2) continue;
+      // the air cell just above the piece's best top cell: how much of the remaining path it could shorten
+      let best = Infinity;
+      for (const [x, y] of c.cells) { const a = world.inBounds(x, y - 1) ? air[(y - 1) * world.w + x] : Infinity; if (a < best) best = a; }
+      cheap.push({ req, h: best + rng.next() * 1.5 });
+    }
+  }
+  cheap.sort((a, b) => a.h - b.h);
+  const scored: { req: PlaceRequest; p: number }[] = [];
+  // full route probes are the expensive part: a few for static pieces, fewer for moving ones (timed edges)
+  for (const { req } of cheap.slice(0, def.kind === 'shuttle' || def.kind === 'wheel' ? 3 : 6)) {
+    const { check, nav: g } = validatePlacement(world, req, nav);
+    if (!check.ok || !g) continue;
+    const r = g.reach(false);
+    const pr = progressOf(g.world, r.visited);
+    scored.push({ req, p: r.finish ? 1e9 : pr.stage * 1000 - pr.dist });
+  }
+  scored.sort((a, b) => b.p - a.p);
+  return scored.slice(0, max).map(s => s.req);
+}
+
 /** Fallback for timeouts: a random legal spot anywhere in the build area. */
 export function randomCandidates(world: World, def: ItemDef, rng: Rng, max: number): PlaceRequest[] {
   const out: PlaceRequest[] = [];
@@ -143,6 +188,9 @@ export class BotRacer {
   private bad = new Set<NavEdge>();
   private noise = new WeakMap<NavEdge, number>();
   private target: number | null = null; // coin node detour
+  private timed: NavEdge | null = null;
+  private waitSince = -1;
+  private waitEdge: NavEdge | null = null;
   stuckCount = 0;
 
   constructor(id: string, difficulty: Difficulty, seed: number) {
@@ -156,6 +204,7 @@ export class BotRacer {
     let n = this.noise.get(e);
     if (n === undefined) { n = 1 + this.rng.range(0, this.diff.routeNoise); this.noise.set(e, n); }
     let c = (e.frames + e.wallJumps * 8) * n;
+    if (e.period) c += e.period / 4 + 20; // expected wait for a timed departure
     if (this.bad.has(e)) c += 900;
     c += hazardRisk(e, sim) * (1 - this.diff.riskTolerance) * 120;
     return c;
@@ -220,13 +269,14 @@ export class BotRacer {
         return b.wallSliding && this.rng.chance(0.03) ? IN_JUMP : 0;
       }
     }
-    if (b.groundMover >= 0) {
-      // riding a moving platform: hop off toward the flag once it is roughly aligned
+    const ridden = b.groundMover >= 0 ? sim.movers[b.groundMover] : undefined;
+    if (ridden && ridden.hz) {
+      // riding a legacy moving platform: hop off toward the flag once it is roughly aligned
       const fin = sim.world.finishPx;
       const dir = fin.x > b.x ? IN_RIGHT : IN_LEFT;
       return this.rng.chance(0.04) ? dir | IN_JUMP : dir;
     }
-    const node = prober.landingNode(b);
+    const node = ridden ? moverKey(ridden.o, ridden.child) : prober.landingNode(b);
     if (node === null) {
       // standing somewhere odd (edge lip, crumbling floor): shuffle toward the flag
       const fin = sim.world.finishPx;
@@ -237,10 +287,28 @@ export class BotRacer {
       this.plan = this.makePlan(sim, nav, node);
       if (!this.plan) return this.wander(sim, b);
     }
-    const e = this.plan[0];
+    let e = this.plan[0];
+    if (e.period) {
+      // timed edge: among the variants to the same place, take the one that departs soonest, then wait for its tick
+      if (this.timed?.from !== e.from || this.timed.to !== e.to) this.timed = soonest(nav.edges(e.from), e, sim.tick);
+      e = this.timed;
+      this.plan[0] = e;
+    } else this.timed = null;
+    if (isMoverKey(e.from) && ridden) {
+      // riding: stay centred on the live platform until the departure tick, then run the recorded jump
+      const r = childRect(ridden.o, ridden.child, sim.tick);
+      const want = r.x + r.w / 2 - BW / 2;
+      this.holdProgress(sim, e);
+      const due = (e.phase! - (sim.tick % e.period!) + e.period!) % e.period! === 0;
+      const rel = want - b.x;
+      if (!due) return Math.abs(rel) > 1 ? (rel > 0 ? IN_RIGHT : IN_LEFT) : 0;
+      if (Math.abs(rel) > 3) return rel > 0 ? IN_RIGHT : IN_LEFT; // missed this lap's window: try the next one
+      this.edge = e; this.frame = 0; this.mode = 'exec';
+      return e.inputs[this.frame++];
+    }
     const start = nav.node(e.from);
     const dx = start.x - b.x;
-    if (e.kind === 'walk' && e.frames < 40) {
+    if (e.kind === 'walk' && e.frames < 40 && !e.period) {
       // walking edges: steer straight to the next cell, no need to stop and align
       const nxt = e.to === FINISH ? null : nav.node(e.to);
       if (nxt) {
@@ -259,8 +327,15 @@ export class BotRacer {
       if (this.waitT <= 0 && !edgeSafe(e, sim) && this.rng.chance(0.85)) this.waitT = 0.2;
       return 0;
     }
+    if (e.period && (e.phase! - (sim.tick % e.period) + e.period) % e.period !== 0) { this.holdProgress(sim, e); return 0; } // wait for the platform
     this.edge = e; this.frame = 0; this.mode = 'exec';
     return e.inputs[this.frame++];
+  }
+
+  /** Waiting for a platform is progress, for up to two of its cycles; after that the stuck detector may step in. */
+  private holdProgress(sim: RaceSim, e: NavEdge) {
+    if (this.waitSince < 0 || this.waitEdge !== e) { this.waitSince = sim.tick; this.waitEdge = e; }
+    if (sim.tick - this.waitSince < 2 * e.period!) this.lastProgressTick = sim.tick;
   }
 
   private makePlan(sim: RaceSim, nav: NavGraph, node: number): NavEdge[] | null {
@@ -287,6 +362,17 @@ export class BotRacer {
 }
 
 /** Ground steering to a target offset that accounts for ice: brake by counter-steering when release would slide. */
+/** The variant of a timed edge (same start and destination) whose departure tick comes up first. */
+function soonest(edges: NavEdge[], e: NavEdge, tick: number): NavEdge {
+  let best = e, bestWait = Infinity;
+  for (const c of edges) {
+    if (c.to !== e.to || !c.period) continue;
+    const wait = (c.phase! - (tick % c.period) + c.period) % c.period;
+    if (wait < bestWait || (wait === bestWait && c.frames < best.frames)) { best = c; bestWait = wait; }
+  }
+  return best;
+}
+
 function steerTo(b: { vx: number; groundSurf: number }, dx: number, tol: number): number {
   const ice = b.groundSurf === S_ICE;
   const decel = ice ? PHYS.groundAccel * PHYS.iceAccelMul + PHYS.groundDecel * PHYS.iceDecelMul : PHYS.groundDecel;

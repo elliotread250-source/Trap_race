@@ -1,11 +1,12 @@
 // Client state: mirrors what the server says, predicts only the local player's movement, interpolates everyone else.
-import { DT, HAZARD, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config';
+import { DT, HAZARD, PHYS, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config';
 import { laserInOff, moverRect } from '../../shared/hazards';
+import { childRect } from '../../shared/movers';
 import { getItem } from '../../shared/items';
 import { cloneBody, newBody, stepBody, type Body } from '../../shared/physics';
 import { checkPlacement, type PlaceCheck, type PlaceRequest } from '../../shared/placement';
 import type { Card, ClientMsg, Phase, RoomInfo, ServerMsg } from '../../shared/protocol';
-import { applyBodySnap, RaceSim, type PlayerSnap, type RaceEvent, type RaceSnapshot } from '../../shared/race';
+import { applyBodySnap, RaceSim, type PlayerSnap, type RaceEvent, type RaceSnapshot, type SimMover } from '../../shared/race';
 import type { PlayerTally, RoundRow } from '../../shared/scoring';
 import { World } from '../../shared/world';
 import { inputBits } from './input';
@@ -32,6 +33,8 @@ export class GameClient {
   world: World | null = null;
   cards: Card[] = [];
   demolition = false;
+  /** the server says a full route to the flag exists (false on an unbridged build-required course) */
+  courseOpen = true;
   placedThisRound = false;
   race: RaceSim | null = null;
   roundKey = '';
@@ -43,6 +46,8 @@ export class GameClient {
   seq = 0;
   sendBuf: { seq: number; b: number }[] = [];
   acc = 0;
+  /** last snapshot's tick and our acked input: input seq s is processed by the server on tick base.tick + (s - base.ack) */
+  predBase = { tick: 0, ack: 0 };
   corr = { x: 0, y: 0 };
   results: { rows: RoundRow[]; competitive: boolean; last: boolean } | null = null;
   matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[] } | null = null;
@@ -161,7 +166,7 @@ export class GameClient {
         if (m.phase === 'countdown') this.onEvent({ type: 'countdown' });
         break;
       case 'world': this.world = World.fromJSON(m.world); this.refreshCheck(); break;
-      case 'draft': this.cards = m.cards; this.demolition = m.demolition; break;
+      case 'draft': this.cards = m.cards; this.demolition = m.demolition; this.courseOpen = m.open !== false; break;
       case 'claimed': {
         const c = this.cards.find(k => k.id === m.card);
         if (c) c.by = m.by;
@@ -224,7 +229,7 @@ export class GameClient {
     race.projectiles = s.proj.map(([id, kind, x, y, vx, vy]) => ({ id, kind, owner: null, src: '', x, y, vx, vy, r: kind === 'cannon' ? HAZARD.cannonBallR : 4, age: 0, hit: [], alive: true }));
     for (const e of ev) this.onEvent(e);
     const me = s.players.find(p => p.id === this.you);
-    if (me) this.reconcile(me);
+    if (me) { this.predBase = { tick: s.tick, ack: me.ack }; this.reconcile(me); }
   }
 
   private reconcile(me: PlayerSnap) {
@@ -235,8 +240,8 @@ export class GameClient {
     applyBodySnap(this.pred, me);
     this.pending = this.pending.filter(p => p.seq > me.ack);
     const p = race.player(this.you)!;
-    const movers = this.predMovers();
-    for (const pi of this.pending) { stepBody(this.pred, pi.b, race.envFor(p, movers)); this.stats.predSteps++; }
+    // replay each unacknowledged input against the platform poses of the exact tick the server will run it on
+    for (const pi of this.pending) { stepBody(this.pred, pi.b, race.envFor(p, this.predMovers(this.tickForSeq(pi.seq)))); this.stats.predSteps++; }
     const dx = before.x - this.pred.x, dy = before.y - this.pred.y;
     this.stats.lastCorr = Math.hypot(dx, dy);
     // small corrections are smoothed visually; big ones snap
@@ -256,7 +261,7 @@ export class GameClient {
     const steps = dtMs / 1000;
     if (this.phase === 'race') {
       for (const h of race.hz) h.phase += steps * (h.kind === 'laser' ? (laserInOff(h.phase) ? slow : 1) : h.slowable ? slow : 1);
-      for (const m of race.movers) { m.prev = m.rect; m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); }
+      for (const m of race.movers) if (m.hz) { m.prev = m.rect; m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); }
     }
     const k = Math.pow(0.0001, dtMs / 1000); // decay correction offset quickly
     this.corr.x *= k; this.corr.y *= k;
@@ -276,22 +281,40 @@ export class GameClient {
     if (this.pending.length > 240) this.pending.shift();
     this.sendBuf.push({ seq: this.seq, b: bits });
     this.predPrev = cloneBody(this.pred);
-    stepBody(this.pred, bits, race.envFor(p, this.predMovers()));
+    stepBody(this.pred, bits, race.envFor(p, this.predMovers(this.tickForSeq(this.seq))));
     if (this.pred.jumped || this.pred.wallJumped) this.onEvent({ type: 'localJump', wall: this.pred.wallJumped });
     if (this.pred.landed) this.onEvent({ type: 'localLand' });
     this.flushInputs(false);
   }
 
-  /** Moving platforms at the mirror's current phase with a one-tick delta (so riding carries exactly like the server). */
-  private predMovers() {
+  tickForSeq(seq: number): number { return this.predBase.tick + (seq - this.predBase.ack); }
+
+  /**
+   * Platforms for predicting one input: kinematic bodies at the exact server tick that input runs on, legacy moving
+   * platforms at the mirror's current phase with a one-tick delta (so riding carries exactly like the server).
+   */
+  private predMovers(tick: number) {
     const race = this.race!;
     const slow = race.slowTicks > 0 ? 0.5 : 1;
-    return race.movers.map(m => {
-      const r = moverRect(m.o, m.hz.phase, m.hz.pathLen);
-      const pr = moverRect(m.o, m.hz.phase - DT * slow, m.hz.pathLen);
-      return { x: r.x, y: r.y, w: r.w, h: r.h, dx: r.x - pr.x, dy: r.y - pr.y };
-    });
+    return race.moversAt(tick, (m: SimMover) => ({ rect: moverRect(m.o, m.hz!.phase, m.hz!.pathLen), prev: moverRect(m.o, m.hz!.phase - DT * slow, m.hz!.pathLen) }));
   }
+
+  /**
+   * The tick at which kinematic platforms are drawn: our own prediction tick while racing (so we line up with the
+   * platform we stand on), the interpolation tick while spectating, sim time in rehearsal, a local clock while building.
+   */
+  renderTick(): number {
+    if (this.rehearsal) return this.rehearsal.sim.tick + this.rehearsal.acc / STEP;
+    if (this.race && (this.phase === 'race' || this.phase === 'results' || this.phase === 'countdown')) {
+      if (this.phase === 'countdown') return 0;
+      if (this.pred && this.phase === 'race') return this.tickForSeq(this.seq);
+      return Math.max(0, Math.min(this.race.tick + 0, this.serverTickNow() - 6));
+    }
+    return (performance.now() / 1000) * TICK_HZ;
+  }
+
+  /** Pixel rect of a mover child at a tick (kinematic children exact, legacy ones at their mirrored pose). */
+  moverRectAt(m: SimMover, tick: number) { return m.hz ? m.rect : childRect(m.o, m.child, tick); }
 
   private flushInputs(force: boolean) {
     if (!this.sendBuf.length) return;
@@ -317,6 +340,12 @@ export class GameClient {
     }
     const pa = a.s.players.find(p => p.id === id), pb = b.s.players.find(p => p.id === id);
     if (!pa || !pb) return null;
+    // a remote rider is drawn relative to their platform so they stay glued to it at our render tick
+    const ride = this.race?.movers[pb.gm];
+    if (pb.g === 1 && pb.gm >= 0 && ride && !ride.hz) {
+      const then = childRect(ride.o, ride.child, b.s.tick), now = childRect(ride.o, ride.child, this.renderTick());
+      return { x: pb.x - then.x + now.x, y: now.y - PHYS.bodyH, vx: pb.vx, vy: pb.vy, snap: pb };
+    }
     if (b.s.tick === a.s.tick || target >= b.s.tick) {
       const ext = Math.min(6, Math.max(0, target - b.s.tick)) / TICK_HZ;
       return { x: pb.x + pb.vx * ext, y: pb.y + pb.vy * ext, vx: pb.vx, vy: pb.vy, snap: pb };

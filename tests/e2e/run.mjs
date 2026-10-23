@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
-const EXEC = process.env.CHROME ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const EXEC = process.env.CHROME ?? ((await import('node:fs')).existsSync('/opt/pw-browsers/chromium-1194/chrome-linux/chrome') ? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' : '/opt/pw-browsers/chromium');
 let base = process.env.BASE;
 let server;
 if (!base) {

@@ -10,6 +10,7 @@ import { Renderer } from './render';
 import { settings, saveSettings } from './store';
 import { animatePreviews, UI } from './ui';
 import type { LocalTransport } from './net';
+import { applyPlacement, checkPlacement, makeObject } from '../../shared/placement';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const root = document.getElementById('ui')!;
@@ -205,4 +206,5 @@ if (hadToken) {
   ui.go('join');
 } else ui.go('menu');
 
-(window as unknown as { __trap: unknown }).__trap = { game, ui, renderer };
+// debug handle used by the browser tests (placement helpers let them set up courses directly)
+(window as unknown as { __trap: unknown }).__trap = { game, ui, renderer, dev: { checkPlacement, makeObject, applyPlacement } };

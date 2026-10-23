@@ -6,6 +6,7 @@ import {
   pendulumPos, rspikeState, sawPos, springDir, springRect, staticLethal, type StaticLethal,
 } from './hazards';
 import { getItem, type PowerType } from './items';
+import { childCount, childId, childRect } from './movers';
 import { bodyCenter, bodyRect, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
 import { spikeStripPx, type PlacedObject, type World } from './world';
 
@@ -50,6 +51,8 @@ export type RaceEvent =
 
 interface Hz { o: PlacedObject; kind: string; phase: number; slowable: boolean; pathLen: number; beam: number; fireAcc: number }
 
+export interface SimMover { id: string; o: PlacedObject; child: number; hz: Hz | null; rect: Rect; prev: Rect }
+
 interface CrumbleState { o: PlacedObject; rect: Rect; trigger: number; brokenUntil: number; broken: boolean }
 
 export interface RaceOptions { roundKey: string; maxTicks: number; seed?: number }
@@ -65,7 +68,11 @@ export class RaceSim {
   coins: CoinState[] = [];
   pickups: PickupState[] = [];
   hz: Hz[] = [];
-  movers: { o: PlacedObject; idx: number; hz: Hz; rect: Rect; prev: Rect }[] = [];
+  /**
+   * Every solid moving body, in a fixed order shared with clients: legacy moving platforms (phase-driven) first, then
+   * kinematic platform children (tick-driven) by object id and child index. Body.groundMover indexes this list.
+   */
+  movers: SimMover[] = [];
   crumbles = new Map<string, CrumbleState>();
   slowTicks = 0;
   events: RaceEvent[] = [];
@@ -114,14 +121,29 @@ export class RaceSim {
           this.hz.push(h);
           if (def.kind === 'moving') {
             const r = moverRect(o, 0, h.pathLen);
-            this.movers.push({ o, idx: this.movers.length, hz: h, rect: r, prev: { ...r } });
+            this.movers.push({ id: childId(o, 0), o, child: 0, hz: h, rect: r, prev: { ...r } });
           }
           break;
         }
         default: break;
       }
     }
+    // kinematic platforms start at their GO pose (tick 0) every race, for every player
+    for (const o of world.kinematic) for (let i = 0; i < childCount(o); i++) {
+      const r = childRect(o, i, 0);
+      this.movers.push({ id: childId(o, i), o, child: i, hz: null, rect: r, prev: { ...r } });
+    }
     this.lethal = staticLethal(world);
+  }
+
+  /** Mover poses at an arbitrary tick: kinematic bodies exactly, legacy ones at their current phase. */
+  moversAt(tick: number, legacy?: (m: SimMover) => { rect: Rect; prev: Rect }): Mover[] {
+    return this.movers.map(m => {
+      let r: Rect, pr: Rect;
+      if (m.hz) { const l = legacy ? legacy(m) : { rect: m.rect, prev: m.prev }; r = l.rect; pr = l.prev; }
+      else { r = childRect(m.o, m.child, tick); pr = childRect(m.o, m.child, tick - 1); }
+      return { x: r.x, y: r.y, w: r.w, h: r.h, dx: r.x - pr.x, dy: r.y - pr.y, id: m.id };
+    });
   }
 
   get time() { return this.tick / TICK_HZ; }
@@ -145,7 +167,7 @@ export class RaceSim {
   };
 
   moverList(): Mover[] {
-    return this.movers.map(m => ({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h, dx: m.rect.x - m.prev.x, dy: m.rect.y - m.prev.y }));
+    return this.movers.map(m => ({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h, dx: m.rect.x - m.prev.x, dy: m.rect.y - m.prev.y, id: m.id }));
   }
 
   /** Physics environment for one player (shared with client prediction). */
@@ -205,7 +227,8 @@ export class RaceSim {
       if (this.world.inBounds(cx, cy) && this.isSolid(cx, cy)) best = t;
     }
     for (const m of this.movers) {
-      const mt = segRect(x0, y0, x1, y1, m.rect);
+      // relative motion: test the segment in the platform's frame so fast shots and moving bodies never tunnel
+      const mt = segRect(x0 + (m.rect.x - m.prev.x), y0 + (m.rect.y - m.prev.y), x1, y1, m.rect);
       if (mt >= 0 && (best < 0 || mt < best)) best = mt;
     }
     return best;
@@ -232,7 +255,7 @@ export class RaceSim {
         h.phase += DT * (laserInOff(h.phase) ? slow : 1);
       } else h.phase += DT * (h.slowable ? slow : 1);
     }
-    for (const m of this.movers) { m.prev = m.rect; m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); }
+    for (const m of this.movers) { m.prev = m.rect; m.rect = m.hz ? moverRect(m.o, m.hz.phase, m.hz.pathLen) : childRect(m.o, m.child, this.tick); }
     const movers = this.moverList();
 
     this.fireLaunchers(slow);
@@ -512,7 +535,10 @@ export class RaceSim {
     this.tick = s.tick;
     this.slowTicks = s.slow;
     s.hz.forEach((ph, i) => { if (this.hz[i]) this.hz[i].phase = ph; });
-    for (const m of this.movers) { m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); m.prev = { ...m.rect }; }
+    for (const m of this.movers) {
+      if (m.hz) { m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); m.prev = { ...m.rect }; }
+      else { m.rect = childRect(m.o, m.child, this.tick); m.prev = childRect(m.o, m.child, this.tick - 1); }
+    }
     const broken = new Set(s.crumble);
     for (const c of this.crumbles.values()) c.broken = broken.has(c.o.id);
     const gone = new Set(s.pick);

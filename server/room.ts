@@ -1,15 +1,18 @@
 // Room membership and the server-owned match phase machine. No Node or DOM APIs: solo practice runs this in the browser.
 import { MATCH, PROTOCOL_VERSION, TICK_HZ, TIMERS, SNAPSHOT_EVERY_TICKS, NET, type Difficulty } from '../shared/config';
 import { getItem, ITEM_LIST, type DraftGroup } from '../shared/items';
-import { MAP_LIST, MAPS } from '../shared/maps';
-import { NavGraph } from '../shared/nav';
+import { MAP_LIST, MAPS, selectableMap } from '../shared/maps';
+import { baseNav, NavGraph } from '../shared/nav';
 import { applyBomb, applyPlacement, makeObject, validatePlacement, type PlaceRequest } from '../shared/placement';
 import { parseClientMsg, sanitizeName, type Card, type ClientMsg, type MemberInfo, type Phase, type RoomInfo, type ServerMsg } from '../shared/protocol';
 import { RaceSim, type PlayerStatus, type RaceEvent } from '../shared/race';
 import { Rng, hashString } from '../shared/rng';
 import { applyRound, rankMatch, scoreRound, type PlayerTally, type RoundRow } from '../shared/scoring';
 import { World } from '../shared/world';
-import { BotRacer, botPickCard, botPlacementCandidates, randomCandidates } from './bots';
+import { BotRacer, botBridgeCandidates, botPickCard, botPlacementCandidates, randomCandidates } from './bots';
+
+/** Construction cards that can bridge a build-required gap on their own or in pairs (checked on The Great Oak). */
+export const BRIDGING = new Set(['plank_3', 'plank_5', 'plank_7', 'block_2x2', 'block_2x3', 'block_3x3', 'l_block', 'stairs', 'spring', 'shuttle', 'wheel']);
 
 export function randomToken(bytes = 18): string {
   const a = new Uint8Array(bytes);
@@ -177,14 +180,14 @@ export class Room {
   private hostAction(id: string, msg: Extract<ClientMsg, { t: 'host' }>) {
     const err = (s: string) => this.send(id, { t: 'error', code: 'host', msg: s });
     switch (msg.a) {
-      case 'map': if (this.phase === 'lobby' || this.phase === 'matchEnd') { if (MAPS[msg.mapId] && msg.mapId !== 'lab') { this.mapId = msg.mapId; this.broadcastRoom(); } } break;
+      case 'map': if (this.phase === 'lobby' || this.phase === 'matchEnd') { if (selectableMap(msg.mapId)) { this.mapId = msg.mapId; this.broadcastRoom(); } } break;
       case 'rounds': if (this.phase === 'lobby') { this.rounds = Math.max(MATCH.minRounds, Math.min(MATCH.maxRounds, msg.rounds)); this.broadcastRoom(); } break;
       case 'addBot': { const r = this.addBot(msg.difficulty); if ('error' in r) err(r.error); else this.broadcastRoom(); break; }
       case 'removeBot': { const i = this.members.findIndex(m => m.id === msg.id && m.bot); if (i >= 0 && this.phase === 'lobby') { this.members.splice(i, 1); this.broadcastRoom(); } break; }
       case 'botDiff': { const b = this.members.find(m => m.id === msg.id && m.bot); if (b && this.phase === 'lobby') { b.difficulty = msg.difficulty; this.broadcastRoom(); } break; }
       case 'start': { const e = this.canStart(); if (e) err(e); else this.startMatch(); break; }
       case 'lobby': this.toLobby(); break;
-      case 'rematch': if (this.phase === 'matchEnd') { if (msg.mapId && MAPS[msg.mapId] && msg.mapId !== 'lab') this.mapId = msg.mapId; this.startMatch(); } break;
+      case 'rematch': if (this.phase === 'matchEnd') { if (msg.mapId && selectableMap(msg.mapId)) this.mapId = msg.mapId; this.startMatch(); } break;
     }
   }
 
@@ -271,6 +274,8 @@ export class Match {
   cardOf = new Map<string, string>(); // pid -> card id
   done = new Set<string>(); // placed or skipped this round
   needDemolition = false;
+  /** a full route to the flag exists on the current course (false on a build-required map until someone bridges it) */
+  courseOpen = true;
   tally = new Map<string, PlayerTally>();
   results: RoundRow[][] = [];
   race: RaceSim | null = null;
@@ -289,7 +294,7 @@ export class Match {
     this.totalRounds = rounds;
     this.competitive = roster.length >= 2;
     this.world = new World(mapId); // a new match always starts from the clean base map
-    this.nav = new NavGraph(this.world);
+    this.nav = NavGraph.fromBase(baseNav(mapId), this.world); // shared clean-map graph, derived from as the course changes
     this.rng = new Rng(seed);
     for (const id of roster) this.tally.set(id, { score: 0, finishes: 0, finishTime: 0 });
   }
@@ -314,7 +319,7 @@ export class Match {
     const r = this.room;
     r.send(id, this.phaseMsg());
     r.send(id, { t: 'world', world: this.world.toJSON() });
-    if (this.phase === 'draft' || this.phase === 'build') r.send(id, { t: 'draft', cards: this.pool, demolition: this.needDemolition });
+    if (this.phase === 'draft' || this.phase === 'build') r.send(id, { t: 'draft', cards: this.pool, demolition: this.needDemolition, open: this.courseOpen });
     if (this.race && (this.phase === 'race' || this.phase === 'countdown')) {
       r.send(id, { t: 'raceStart', ids: this.race.players.map(p => p.id), roundKey: this.roundKey, maxTicks: this.race.opts.maxTicks });
       r.send(id, { t: 'snap', s: this.race.snapshot(this.acks()), ev: [] });
@@ -328,19 +333,27 @@ export class Match {
     this.round++;
     this.cardOf.clear();
     this.done.clear();
+    this.courseOpen = this.nav.reach(false).finish;
     this.pool = this.makePool();
     this.room.broadcast({ t: 'world', world: this.world.toJSON() });
     this.setPhase('draft', TIMERS.draftMs);
-    this.room.broadcast({ t: 'draft', cards: this.pool, demolition: this.needDemolition });
+    this.room.broadcast({ t: 'draft', cards: this.pool, demolition: this.needDemolition, open: this.courseOpen });
     this.botTimers.clear();
     for (const id of this.roster) if (this.isBot(id)) this.botTimers.set(id, this.now + this.rng.range(...TIMERS.botDraftDelayMs));
   }
 
+  /** Test hook (browser tests only, set from TEST_POOL): round r's draft offers exactly forcePool[(r - 1) % length]. */
+  static forcePool: string[][] | null = null;
+
   makePool(): Card[] {
+    if (Match.forcePool) return Match.forcePool[(this.round - 1) % Match.forcePool.length].map((item, i) => ({ id: `r${this.round}c${i}`, item, by: null }));
     const n = Math.max(MATCH.minPool, Math.min(MATCH.maxPool, this.roster.length + 2 + this.rng.int(0, 1)));
     const groups: DraftGroup[] = [];
-    const bombDue = this.needDemolition || this.round % 3 === 0 || this.rng.chance(0.2);
+    // an unfinished build-required course needs building, not blasting: everyone gets a construction card to choose
+    const mustBuild = !this.courseOpen;
+    const bombDue = !mustBuild && (this.needDemolition || this.round % 3 === 0 || this.rng.chance(0.2));
     if (bombDue) groups.push('demolition');
+    if (mustBuild) for (let i = 0; i < Math.min(n - 1, this.roster.length); i++) groups.push('construction');
     groups.push('construction', 'hazard');
     while (groups.length < n) {
       const g = this.rng.weighted<DraftGroup>(['construction', 'hazard', 'utility'], g => (g === 'construction' ? 0.42 : g === 'hazard' ? 0.4 : 0.18))!;
@@ -348,7 +361,8 @@ export class Match {
     }
     const used = new Map<string, number>();
     const cards: Card[] = groups.slice(0, n).map((g, i) => {
-      const options = ITEM_LIST.filter(d => d.group === g);
+      // while the course is unfinished, the building cards are the ones that can actually bridge gaps
+      const options = ITEM_LIST.filter(d => d.group === g && (!mustBuild || g !== 'construction' || i >= this.roster.length || BRIDGING.has(d.id)));
       // prefer variety: repeated item types are allowed but weighted down
       const def = this.rng.weighted(options, d => d.weight / (1 + 3 * (used.get(d.id) ?? 0)))!;
       used.set(def.id, (used.get(def.id) ?? 0) + 1);
@@ -388,7 +402,7 @@ export class Match {
   // ---------------- build
   private startBuild() {
     this.setPhase('build', TIMERS.buildMs);
-    this.room.broadcast({ t: 'draft', cards: this.pool, demolition: this.needDemolition });
+    this.room.broadcast({ t: 'draft', cards: this.pool, demolition: this.needDemolition, open: this.courseOpen });
     this.botTimers.clear();
     for (const id of this.roster) if (this.isBot(id)) this.botTimers.set(id, this.now + this.rng.range(...TIMERS.botBuildDelayMs));
   }
@@ -464,7 +478,12 @@ export class Match {
   // ---------------- race
   private startCountdown() {
     this.roundKey = `${this.room.code}:${this.round}:${this.rng.int(0, 1e9)}`;
-    this.race = new RaceSim(this.world, this.roster, { roundKey: this.roundKey, maxTicks: Math.round((TIMERS.raceMs / 1000) * TICK_HZ) });
+    this.courseOpen = this.nav.reach(false).finish;
+    // an unfinished course gets a short scouting run instead of a full race nobody can win
+    // large maps scale the base race length (90 s by default) by their measured need; test hooks shorten both together
+    const fullS = (TIMERS.raceMs / 1000) * ((this.world.map.raceS ?? 90) / 90);
+    const raceS = this.courseOpen ? fullS : Math.min(TIMERS.scoutS, fullS);
+    this.race = new RaceSim(this.world, this.roster, { roundKey: this.roundKey, maxTicks: Math.round(raceS * TICK_HZ) });
     for (const id of this.roster) {
       const m = this.room.member(id);
       if (m && !m.connected) this.race.setConnected(id, false);
@@ -534,8 +553,10 @@ export class Match {
     for (const r of rows) r.matchTotal = this.tally.get(r.pid)!.score;
     this.results.push(rows);
     const finishers = rows.filter(r => r.time !== null).length;
-    this.needDemolition = this.competitive && finishers === 0;
-    if (!this.needDemolition && !this.nav.reach(false).finish) this.needDemolition = true;
+    const open = this.nav.reach(false).finish;
+    // nobody finished a complete course, or the route check says it got blocked: guarantee a bomb next draft.
+    // An unfinished build-required course is different: the next draft guarantees construction instead (makePool).
+    this.needDemolition = open ? this.competitive && finishers === 0 : !this.world.map.buildRequired;
     this.setPhase('results', TIMERS.resultsMs);
     this.room.broadcast({ t: 'results', round: this.round, rows, competitive: this.competitive, last: this.round >= this.totalRounds });
   }
@@ -559,7 +580,7 @@ export class Match {
           if (now < at || this.cardOf.has(id)) continue;
           this.botTimers.delete(id);
           const m = this.room.member(id)!;
-          const card = botPickCard(this.pool, m.difficulty ?? 'medium', this.rng, this.needDemolition, this.world.playerObjectCount());
+          const card = botPickCard(this.pool, m.difficulty ?? 'medium', this.rng, this.needDemolition, this.world.playerObjectCount(), !this.courseOpen);
           if (card) this.claim(id, card.id, this.round);
           if (this.phase !== 'draft') return;
         }
@@ -575,7 +596,7 @@ export class Match {
         if (now >= this.deadline) this.finishBuild();
         break;
       case 'countdown':
-        if (now >= this.deadline) { this.setPhase('race', TIMERS.raceMs); }
+        if (now >= this.deadline) { this.setPhase('race', (this.race!.opts.maxTicks / TICK_HZ) * 1000); }
         break;
       case 'race':
         this.stepRace();
@@ -592,7 +613,10 @@ export class Match {
     if (!item) { this.done.add(id); return; }
     const def = getItem(item);
     const m = this.room.member(id)!;
-    const cands = botPlacementCandidates(this.world, this.nav, def, m.difficulty ?? 'medium', this.rng, 4);
+    // on an unfinished course a bot with a building piece helps bridge it: the spot that gets players furthest wins
+    const cands = !this.courseOpen && def.group === 'construction'
+      ? botBridgeCandidates(this.world, this.nav, def, this.rng, 5)
+      : botPlacementCandidates(this.world, this.nav, def, m.difficulty ?? 'medium', this.rng, 4);
     for (const req of cands) {
       if (this.placeQuiet(id, req)) return;
     }

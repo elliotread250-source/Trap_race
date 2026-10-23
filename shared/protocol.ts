@@ -45,7 +45,7 @@ export type ServerMsg =
   | { t: 'error'; code: string; msg: string }
   | { t: 'phase'; phase: Phase; round: number; rounds: number; endsIn: number; mapId: string; competitive: boolean; tally: Record<string, PlayerTally> }
   | { t: 'world'; world: WorldSnapshot }
-  | { t: 'draft'; cards: Card[]; demolition: boolean }
+  | { t: 'draft'; cards: Card[]; demolition: boolean; open?: boolean }
   | { t: 'claimed'; card: string; by: string }
   | { t: 'claimFail'; card: string; msg: string }
   | { t: 'placed'; obj: PlacedObject; by: string; version: number }

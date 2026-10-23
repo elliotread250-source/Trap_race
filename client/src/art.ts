@@ -1,6 +1,6 @@
 // Original procedural vector art. Characters are drawn around the shared 28x42 body; ears, hats and tails are
 // decoration outside it and never change the hitbox.
-import { CELL, HAZARD, PHYS } from '../../shared/config';
+import { CELL, HAZARD, MOVERS, PHYS } from '../../shared/config';
 import { DIRS, rotDirIndex, rotateMask, type Rot } from '../../shared/grid';
 import { getItem, type ItemDef } from '../../shared/items';
 
@@ -474,12 +474,70 @@ function drawStation(ctx: CanvasRenderingContext2D, def: ItemDef, x: number, y: 
   ctx.restore();
 }
 
+// ---------------------------------------------------------------- kinematic platforms
+/** Shuttle Block body: teal metal deck with chevrons pointing the way it is travelling. */
+export function drawShuttleBody(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, dir: { x: number; y: number }, owner: string, t: number, ghost = false) {
+  ctx.save();
+  if (ghost) ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#1f9e90'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = '#7ff0e0'; ctx.fillRect(r.x + 3, r.y + 3, r.w - 6, 7);
+  ctx.fillStyle = '#0f4a44'; ctx.fillRect(r.x, r.y + r.h - 7, r.w, 7);
+  ctx.fillStyle = 'rgba(220,255,250,0.75)';
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2 + 2;
+  const off = ((t * 1.6) % 1) * 10;
+  for (let i = -1; i <= 1; i++) {
+    const k = i * 14 + off - 5;
+    const px = cx + dir.x * k, py = cy + dir.y * k;
+    ctx.beginPath();
+    ctx.moveTo(px + dir.x * 6, py + dir.y * 6);
+    ctx.lineTo(px - dir.y * 7 - dir.x * 3, py + dir.x * 7 - dir.y * 3);
+    ctx.lineTo(px + dir.y * 7 - dir.x * 3, py - dir.x * 7 - dir.y * 3);
+    ctx.fill();
+  }
+  // readable outline on every background, then the owner's colour
+  ctx.strokeStyle = 'rgba(8,16,24,0.85)'; ctx.lineWidth = 3; ctx.strokeRect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3);
+  ctx.strokeStyle = owner; ctx.lineWidth = 2; ctx.strokeRect(r.x + 3.5, r.y + 3.5, r.w - 7, r.h - 7);
+  ctx.restore();
+}
+
+/** One Ferris wheel gondola: a warm, level seat platform. index 0 carries a small marker so the starting phase reads. */
+export function drawGondola(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, owner: string, index: number, ghost = false) {
+  ctx.save();
+  if (ghost) ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#e8932e'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = '#ffe08a'; ctx.fillRect(r.x + 3, r.y + 3, r.w - 6, 7);
+  ctx.fillStyle = '#7a4a12'; ctx.fillRect(r.x, r.y + r.h - 7, r.w, 7);
+  ctx.fillStyle = 'rgba(122,74,18,0.6)';
+  for (let i = 1; i < 4; i++) { if (r.w > r.h) ctx.fillRect(r.x + (r.w * i) / 4 - 1, r.y + 12, 2, r.h - 20); else ctx.fillRect(r.x + 12, r.y + (r.h * i) / 4 - 1, r.w - 24, 2); }
+  if (index === 0) { ctx.fillStyle = '#fff6d8'; ctx.beginPath(); ctx.arc(r.x + r.w / 2, r.y + r.h / 2 + 3, 5, 0, Math.PI * 2); ctx.fill(); }
+  ctx.strokeStyle = 'rgba(8,16,24,0.85)'; ctx.lineWidth = 3; ctx.strokeRect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3);
+  ctx.strokeStyle = owner; ctx.lineWidth = 2; ctx.strokeRect(r.x + 3.5, r.y + 3.5, r.w - 7, r.h - 7);
+  ctx.restore();
+}
+
+/** The wheel's hub and spokes: decoration only (no collision), drawn thin and translucent behind the gondolas. */
+export function drawWheelHub(ctx: CanvasRenderingContext2D, px: number, py: number, centres: { x: number; y: number }[], owner: string, angle: number, ghost = false) {
+  ctx.save();
+  if (ghost) ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = 'rgba(230,236,255,0.35)'; ctx.lineWidth = 3;
+  for (const c of centres) { ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(c.x, c.y); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(230,236,255,0.18)'; ctx.lineWidth = 2;
+  if (centres.length) { const R = Math.hypot(centres[0].x - px, centres[0].y - py); ctx.beginPath(); ctx.arc(px, py, R, 0, Math.PI * 2); ctx.stroke(); }
+  ctx.translate(px, py); ctx.rotate(angle);
+  ctx.fillStyle = '#3b3f52'; ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#c9cfe0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = owner; ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#c9cfe0'; for (let i = 0; i < 4; i++) { ctx.rotate(Math.PI / 2); ctx.beginPath(); ctx.moveTo(5, 0); ctx.lineTo(10, 0); ctx.stroke(); }
+  ctx.restore();
+}
+
 /** Card thumbnail: the item at rotation 0 with its exact footprint on a small grid. */
 export function drawCardPreview(canvas: HTMLCanvasElement, itemId: string, t = 0) {
   const def = getItem(itemId);
   const ctx = canvas.getContext('2d')!;
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
+  if (def.kind === 'shuttle' || def.kind === 'wheel') { drawMoverCard(ctx, def.kind, W, H, t); return; }
   const mask = def.kind === 'bomb' ? Array.from({ length: (def.bombSize ?? 1) ** 2 }, (_, i) => [i % (def.bombSize ?? 1), Math.floor(i / (def.bombSize ?? 1))] as [number, number]) : rotateMask(def.mask, 0);
   let mw = 0, mh = 0;
   for (const [x, y] of mask) { mw = Math.max(mw, x + 1); mh = Math.max(mh, y + 1); }
@@ -501,5 +559,33 @@ export function drawCardPreview(canvas: HTMLCanvasElement, itemId: string, t = 0
   for (const [x, y] of mask) ctx.fillRect((ox + x) * C, (oy + y) * C, C, C);
   if (def.kind === 'blackhole') { ctx.beginPath(); ctx.rect(0, 0, showW * C, showH * C); ctx.clip(); }
   drawItem(ctx, def, mask, ox * C, oy * C, 0, { t, state: 'out', owner: '#ffd25e' });
+  ctx.restore();
+}
+
+/** Card art for the moving platforms: the whole lane or orbit at true scale, animated, with the exact 2x1 bodies. */
+function drawMoverCard(ctx: CanvasRenderingContext2D, kind: 'shuttle' | 'wheel', W: number, H: number, t: number) {
+  const cellsW = kind === 'shuttle' ? 2 + MOVERS.shuttleTravelCells + 1 : MOVERS.wheelRadiusCells * 2 + 3;
+  const cellsH = kind === 'shuttle' ? 3 : MOVERS.wheelRadiusCells * 2 + 2;
+  const scale = Math.min(W / (cellsW * C), H / (cellsH * C));
+  ctx.save();
+  ctx.translate((W - cellsW * C * scale) / 2, (H - cellsH * C * scale) / 2);
+  ctx.scale(scale, scale);
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1 / scale;
+  for (let x = 0; x <= cellsW; x++) { ctx.beginPath(); ctx.moveTo(x * C, 0); ctx.lineTo(x * C, cellsH * C); ctx.stroke(); }
+  for (let y = 0; y <= cellsH; y++) { ctx.beginPath(); ctx.moveTo(0, y * C); ctx.lineTo(cellsW * C, y * C); ctx.stroke(); }
+  if (kind === 'shuttle') {
+    const lane = 2 + MOVERS.shuttleTravelCells;
+    ctx.fillStyle = 'rgba(127,240,224,.12)'; ctx.fillRect(0.5 * C, C, lane * C, C);
+    ctx.setLineDash([8, 6]); ctx.strokeStyle = 'rgba(127,240,224,.6)'; ctx.lineWidth = 3; ctx.strokeRect(0.5 * C, C, lane * C, C); ctx.setLineDash([]);
+    const off = (MOVERS.shuttleTravelCells * C * (1 - Math.cos((2 * Math.PI * t * 60) / MOVERS.shuttlePeriodTicks))) / 2;
+    const dir = Math.sin((2 * Math.PI * t * 60) / MOVERS.shuttlePeriodTicks) >= 0 ? 1 : -1;
+    drawShuttleBody(ctx, { x: 0.5 * C + off, y: C, w: 2 * C, h: C }, { x: dir, y: 0 }, '#ffd25e', t);
+  } else {
+    const R = MOVERS.wheelRadiusCells * C, px = (cellsW * C) / 2, py = (cellsH * C) / 2;
+    const a0 = (2 * Math.PI * t * 60) / MOVERS.wheelPeriodTicks;
+    const rects = [0, 1, 2, 3].map(i => { const a = a0 + (i * Math.PI) / 2; return { x: px + Math.cos(a) * R - C, y: py + Math.sin(a) * R - C / 2, w: 2 * C, h: C }; });
+    drawWheelHub(ctx, px, py, rects.map(r => ({ x: r.x + C, y: r.y + C / 2 })), '#ffd25e', a0);
+    rects.forEach((r, i) => drawGondola(ctx, r, '#ffd25e', i));
+  }
   ctx.restore();
 }

@@ -1,5 +1,5 @@
 // Player movement: one deterministic fixed-step function used by the server, client prediction, bots and route probes.
-import { CELL, DT, PHYS } from './config';
+import { CELL, DT, MOVERS, PHYS } from './config';
 import { DIRS, type Rect } from './grid';
 import { C_ONEWAY, C_SOLID, S_CONVEYOR, S_ICE, type World } from './world';
 
@@ -29,7 +29,8 @@ export interface Body {
   landed: boolean;
 }
 
-export interface Mover { x: number; y: number; w: number; h: number; dx: number; dy: number }
+/** A solid moving body this tick: its rect now and the displacement it made since the previous tick. id is a stable child id. */
+export interface Mover { x: number; y: number; w: number; h: number; dx: number; dy: number; id?: string }
 
 export interface PhysEnv {
   world: World;
@@ -67,6 +68,55 @@ function overlapsSolid(env: PhysEnv, x: number, y: number): boolean {
   return false;
 }
 
+function boxHit(x: number, y: number, m: Mover): boolean {
+  return x < m.x + m.w && x + W > m.x && y < m.y + m.h && y + H > m.y;
+}
+
+/**
+ * A moving platform that runs into a player shoves them clear instead of passing through or crushing them.
+ * Deterministic policy, first candidate that works wins: along the platform's motion, onto its top, to the nearer side,
+ * to the far side, below it. A candidate must be reachable in a straight line without entering any static solid or
+ * another platform, and within MOVERS.resolveMaxPx. Placement keeps rider headroom free above every platform pose, so the
+ * top is always available in practice. No damage is ever dealt for being pushed.
+ */
+function resolveMoverContacts(b: Body, env: PhysEnv, riding: number) {
+  for (let i = 0; i < env.movers.length; i++) {
+    const m = env.movers[i];
+    if (i === riding) continue;
+    const tol = 0.01; // float noise from carrying a rider is not a collision
+    if (!(b.x < m.x + m.w - tol && b.x + W > m.x + tol && b.y < m.y + m.h - tol && b.y + H > m.y + tol)) continue;
+    const cands: [number, number, string][] = [];
+    if (Math.abs(m.dx) >= Math.abs(m.dy) && m.dx !== 0) cands.push([m.dx > 0 ? m.x + m.w : m.x - W, b.y, 'side']);
+    else if (m.dy !== 0) cands.push([b.x, m.dy > 0 ? m.y + m.h : m.y - H, m.dy > 0 ? 'below' : 'top']);
+    cands.push([b.x, m.y - H, 'top']);
+    const leftX = m.x - W, rightX = m.x + m.w;
+    const nearLeft = Math.abs(b.x - leftX) <= Math.abs(b.x - rightX);
+    cands.push([nearLeft ? leftX : rightX, b.y, 'side'], [nearLeft ? rightX : leftX, b.y, 'side'], [b.x, m.y + m.h, 'below']);
+    for (const [tx, ty, kind] of cands) {
+      if (Math.hypot(tx - b.x, ty - b.y) > MOVERS.resolveMaxPx) continue;
+      if (!clearPath(env, b, tx, ty, i)) continue;
+      b.x = tx; b.y = ty;
+      if (kind === 'top') { b.vy = Math.min(b.vy, 0); b.jumpRising = false; }
+      if (kind === 'below') b.vy = Math.max(b.vy, 0);
+      if (kind === 'side') b.vx = tx > m.x ? Math.max(b.vx, 0) : Math.min(b.vx, 0);
+      break;
+    }
+  }
+}
+
+/** Straight move from the body to (tx, ty) touching no static solid and no other platform at the end. */
+function clearPath(env: PhysEnv, b: Body, tx: number, ty: number, skip: number): boolean {
+  const n = Math.max(1, Math.ceil(Math.max(Math.abs(tx - b.x), Math.abs(ty - b.y)) / 8));
+  for (let k = 1; k <= n; k++) {
+    const x = b.x + ((tx - b.x) * k) / n, y = b.y + ((ty - b.y) * k) / n;
+    const x0 = Math.floor(x / CELL), x1 = Math.floor((x + W - EPS) / CELL);
+    const y0 = Math.floor(y / CELL), y1 = Math.floor((y + H - EPS) / CELL);
+    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) if (env.isSolid(cx, cy)) return false;
+  }
+  for (let j = 0; j < env.movers.length; j++) if (j !== skip && boxHit(tx, ty, env.movers[j])) return false;
+  return true;
+}
+
 function onewayAt(env: PhysEnv, cx: number, cy: number): number {
   const w = env.world;
   if (!w.inBounds(cx, cy)) return -1;
@@ -74,7 +124,7 @@ function onewayAt(env: PhysEnv, cx: number, cy: number): number {
   return w.coll[i] === C_ONEWAY ? w.collDir[i] : -1;
 }
 
-function moveX(b: Body, env: PhysEnv, dx: number) {
+function moveX(b: Body, env: PhysEnv, dx: number, skip = -1) {
   if (dx === 0) return;
   const prevX = b.x;
   b.x += dx;
@@ -95,15 +145,17 @@ function moveX(b: Body, env: PhysEnv, dx: number) {
       if (solid || ow) { b.x = (cx + 1) * CELL; b.vx = Math.max(0, b.vx); break; }
     }
   }
-  for (const m of env.movers) {
-    if (b.y < m.y + m.h && b.y + H > m.y && b.x < m.x + m.w && b.x + W > m.x) {
+  for (let i = 0; i < env.movers.length; i++) {
+    const m = env.movers[i];
+    if (i === skip || boxHit(prevX, b.y, m)) continue; // already inside: contact resolution handles it, never snap through
+    if (boxHit(b.x, b.y, m)) {
       if (dx > 0) b.x = m.x - W; else b.x = m.x + m.w;
       b.vx = 0;
     }
   }
 }
 
-function moveY(b: Body, env: PhysEnv, dy: number) {
+function moveY(b: Body, env: PhysEnv, dy: number, skip = -1) {
   if (dy === 0) return;
   const prevY = b.y;
   b.y += dy;
@@ -123,8 +175,10 @@ function moveY(b: Body, env: PhysEnv, dy: number) {
       if (solid || ow) { b.y = (cy + 1) * CELL; b.vy = 0; b.jumpRising = false; break; }
     }
   }
-  for (const m of env.movers) {
-    if (b.x < m.x + m.w && b.x + W > m.x && b.y < m.y + m.h && b.y + H > m.y) {
+  for (let i = 0; i < env.movers.length; i++) {
+    const m = env.movers[i];
+    if (i === skip || boxHit(b.x, prevY, m)) continue;
+    if (boxHit(b.x, b.y, m)) {
       if (dy > 0) { b.y = m.y - H; b.vy = 0; } else { b.y = m.y + m.h; b.vy = 0; b.jumpRising = false; }
     }
   }
@@ -225,14 +279,15 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
   if (b.jumpBuf > 0) b.jumpBuf -= dt;
   if (jump && !b.prevJump) b.jumpBuf = PHYS.jumpBuffer;
 
-  // ride a moving platform
-  if (b.grounded && b.groundMover >= 0 && env.movers[b.groundMover]) {
-    const m = env.movers[b.groundMover];
-    const others = env.movers.filter((_, i) => i !== b.groundMover);
-    const sub: PhysEnv = { ...env, movers: others };
-    moveX(b, sub, m.dx);
-    moveY(b, sub, m.dy);
+  // ride a moving platform: carried by its exact displacement this tick (no velocity is inherited, see MOVERS.inheritVelocity)
+  const riding = b.grounded && b.groundMover >= 0 && env.movers[b.groundMover] ? b.groundMover : -1;
+  if (riding >= 0) {
+    const m = env.movers[riding];
+    moveX(b, env, m.dx, riding); // carried against everything except the platform itself
+    moveY(b, env, m.dy, riding);
   }
+  // platforms that caught the body this tick push it clear (riders were carried above, so their own platform is clear)
+  if (env.movers.length) resolveMoverContacts(b, env, riding);
 
   // horizontal control
   const maxSpeed = (sprint ? PHYS.sprintSpeed : PHYS.walkSpeed) * env.speedMul;

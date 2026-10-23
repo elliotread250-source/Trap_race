@@ -8,7 +8,7 @@ mkdirSync(S, { recursive: true });
 const port = 18960;
 const server = spawn('node', ['dist/server/index.js'], { env: { ...process.env, PORT: String(port) }, stdio: 'ignore' });
 for (let i = 0; i < 60; i++) { try { if ((await fetch(`http://127.0.0.1:${port}/healthz`)).ok) break; } catch {} await new Promise(r => setTimeout(r, 150)); }
-const b = await chromium.launch({ executablePath: process.env.CHROME ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox'] });
+const b = await chromium.launch({ executablePath: process.env.CHROME ?? ((await import('node:fs')).existsSync('/opt/pw-browsers/chromium-1194/chrome-linux/chrome') ? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' : '/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 const out = {};
 // portrait: menu works, gameplay asks to rotate
 {
@@ -31,7 +31,8 @@ for (const [name, vp] of [['phone-landscape', { width: 844, height: 390 }], ['ta
   await p.tap('text=Solo Practice'); await p.tap('text=Start practice');
   await p.waitForSelector('.icard'); await p.waitForTimeout(300);
   await p.screenshot({ path: `${S}/n-${name}-draft.png` });
-  await p.tap('.icard >> nth=0');
+  // any card except a bomb: an empty first-round course has nothing to blow up (round-one pools can include bombs)
+  await p.tap((await p.$('.icard:not(:has-text("Bomb"))')) ? '.icard:not(:has-text("Bomb")) >> nth=0' : '.icard >> nth=0');
   await p.waitForSelector('.buildbar'); await p.waitForTimeout(300);
   // tap to aim, then drag to nudge, until valid
   let valid = false;

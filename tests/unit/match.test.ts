@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { childRect } from '../../shared/movers';
 import { MATCH, TICK_HZ, TIMERS } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import type { ServerMsg } from '../../shared/protocol';
@@ -155,4 +156,41 @@ describe('a full match with bots', () => {
     // every placed object came through the draft
     for (const o of m.world.objects.values()) if (o.prov === 'player') expect(getItem(o.item)).toBeTruthy();
   });
+});
+
+describe('large maps with six players', () => {
+  it('six players (five bots) bridge The Great Oak, race several rounds and finish the match; moving items persist and replay from GO', () => {
+    const { room } = mkRoom();
+    human(room, 'host'); // rooms with no connected human close themselves
+    room.mapId = 'oak';
+    room.rounds = 4;
+    for (let i = 0; i < 5; i++) room.addBot(i % 3 === 0 ? 'hard' : 'medium');
+    room.startMatch();
+    const m = room.match!;
+    // seed every draft with the two moving items so they accumulate across rounds
+    let seededRound = 0, opened = -1, scoutRaces = 0;
+    let guard = 0;
+    while (room.phase !== 'matchEnd' && guard++ < TICK_HZ * 60 * 20) {
+      if (m.phase === 'draft' && seededRound !== m.round) {
+        seededRound = m.round;
+        m.pool[0].item = 'shuttle'; m.pool[1].item = 'wheel';
+      }
+      if (m.phase === 'race' && m.race && m.race.tick === 1) {
+        if (!m.courseOpen) scoutRaces++;
+        else if (opened < 0) opened = m.round;
+        // every race starts every moving platform at its GO pose
+        for (const mv of m.race.movers) if (!mv.hz) expect(mv.prev).toEqual(childRect(mv.o, mv.child, 0));
+      }
+      room.tick();
+    }
+    expect(room.phase).toBe('matchEnd');
+    expect(m.results.length).toBe(4);
+    expect(opened).toBeGreaterThan(0); // bots built the crossing
+    expect(opened).toBeLessThanOrEqual(2);
+    expect(m.results.flat().some(r => r.time !== null)).toBe(true);
+    expect(scoutRaces).toBeLessThanOrEqual(1);
+    // scores add up and no hidden bonus appeared
+    for (const [pid, t] of m.tally) expect(t.score).toBe(m.results.flat().filter(r => r.pid === pid).reduce((a, r) => a + r.total, 0));
+    expect(m.stats.maxValidationMs).toBeLessThan(4000);
+  }, 240000);
 });

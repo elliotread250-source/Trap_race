@@ -101,7 +101,7 @@ export function moverPathLen(world: World, o: PlacedObject): number {
     const x = r.x + t.x * d, y = r.y + t.y * d;
     const x0 = Math.floor(x / C), x1 = Math.floor((x + r.w - 0.01) / C), y0 = Math.floor(y / C), y1 = Math.floor((y + r.h - 0.01) / C);
     for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
-      if (world.solidCell(cx, cy) || !world.inBounds(cx, cy) || world.isProtectedCell(cx, cy)) return d - 4;
+      if (world.solidCell(cx, cy) || !world.inBounds(cx, cy) || world.isProtectedCell(cx, cy) || world.reservedAt(cx, cy)) return d - 4;
     }
   }
   return max;

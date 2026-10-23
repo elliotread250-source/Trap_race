@@ -3,6 +3,7 @@ import { CELL, HAZARD, PROTECT_PAD_CELLS } from './config';
 import { DIRS, rotDirIndex, rotateMask, type Cell, type Rect, type Rot } from './grid';
 import { getItem, type ItemDef } from './items';
 import { getMap, type MapDef } from './maps';
+import { sweepOf, type Motion } from './movers';
 
 export type Provenance = 'map' | 'player';
 
@@ -19,9 +20,13 @@ export interface PlacedObject {
   attach: string | null; // support object id, 'terrain' for map terrain
   wireLen?: number;
   round: number;
+  /** kinematic platforms only: the authoritative motion definition */
+  mv?: Motion;
 }
 
 export const TERRAIN_ID = 'terrain';
+
+const idNum = (id: string) => { const n = Number(id.slice(1)); return Number.isFinite(n) ? n : 1e9; };
 
 // collision cell types
 export const C_EMPTY = 0, C_SOLID = 1, C_ONEWAY = 2;
@@ -41,6 +46,12 @@ export class World {
   collDir: Uint8Array; // one-way normal / conveyor normal
   surf: Uint8Array;
   collObj: (string | null)[];
+  /** cell -> id of the kinematic platform whose swept lane covers it ('' if none) */
+  reserved: string[];
+  /** cell -> id of the kinematic platform needing this cell free of solids as rider headroom ('' if none) */
+  headroom: string[];
+  /** kinematic platform objects in a stable order (numeric id), shared by server and clients */
+  kinematic: PlacedObject[] = [];
   version = 0;
   nextId = 1;
   readonly spawnPx: Rect;
@@ -63,6 +74,8 @@ export class World {
     this.collDir = new Uint8Array(n);
     this.surf = new Uint8Array(n);
     this.collObj = new Array(n).fill(null);
+    this.reserved = new Array(n).fill('');
+    this.headroom = new Array(n).fill('');
     const m = this.map;
     this.spawnPx = { x: m.spawn.x * CELL, y: m.spawn.y * CELL, w: m.spawn.w * CELL, h: m.spawn.h * CELL };
     this.finishPx = { x: m.finish.x * CELL, y: m.finish.y * CELL, w: m.finish.w * CELL, h: m.finish.h * CELL };
@@ -83,6 +96,8 @@ export class World {
   idx(x: number, y: number) { return y * this.w + x; }
   terrainAt(x: number, y: number): number { return this.inBounds(x, y) ? this.terrain[this.idx(x, y)] : 0; }
   occAt(x: number, y: number): string { return this.inBounds(x, y) ? this.occ[this.idx(x, y)] : TERRAIN_ID; }
+  reservedAt(x: number, y: number): string { return this.inBounds(x, y) ? this.reserved[this.idx(x, y)] : ''; }
+  headroomAt(x: number, y: number): string { return this.inBounds(x, y) ? this.headroom[this.idx(x, y)] : ''; }
 
   /** Recompute occupancy and collision from terrain + objects. */
   rebuild() {
@@ -94,19 +109,30 @@ export class World {
       this.collDir[i] = 0;
       this.surf[i] = t === 2 ? S_ICE : S_NORMAL;
       this.collObj[i] = null;
+      this.reserved[i] = '';
+      this.headroom[i] = '';
     }
+    this.kinematic = [];
     for (const o of this.objects.values()) {
       const def = getItem(o.item);
+      const kin = def.kind === 'shuttle' || def.kind === 'wheel';
+      if (kin) {
+        this.kinematic.push(o);
+        const sw = sweepOf(o);
+        for (const [x, y] of sw.sweep) if (this.inBounds(x, y)) this.reserved[this.idx(x, y)] = o.id;
+        for (const [x, y] of sw.headroom) if (this.inBounds(x, y)) this.headroom[this.idx(x, y)] = o.id;
+      }
       for (const [x, y] of o.cells) {
         if (!this.inBounds(x, y)) continue;
         const i = this.idx(x, y);
         this.occ[i] = o.id;
-        if (def.kind === 'moving') continue; // dynamic, not in the static grid
+        if (def.kind === 'moving' || kin) continue; // dynamic, not in the static grid
         if (def.solid) { this.coll[i] = C_SOLID; this.collObj[i] = o.id; }
         if (def.kind === 'oneway') { this.coll[i] = C_ONEWAY; this.collDir[i] = rotDirIndex(0, o.rot); this.collObj[i] = o.id; }
         if (def.kind === 'conveyor') { this.surf[i] = S_CONVEYOR; this.collDir[i] = rotDirIndex(1, o.rot); } // belt tangent
       }
     }
+    this.kinematic.sort((a, b) => idNum(a.id) - idNum(b.id) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     this.version++;
   }
 
@@ -149,7 +175,7 @@ export class World {
   static fromJSON(s: WorldSnapshot): World {
     const w = new World(s.mapId);
     w.objects.clear();
-    for (const o of s.objects) w.objects.set(o.id, { ...o, cells: o.cells.map(c => [c[0], c[1]] as Cell) });
+    for (const o of s.objects) w.objects.set(o.id, { ...o, cells: o.cells.map(c => [c[0], c[1]] as Cell), mv: o.mv ? { ...o.mv } : undefined });
     w.nextId = s.nextId;
     w.rebuild();
     w.version = s.version;
