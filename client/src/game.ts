@@ -5,7 +5,7 @@ import { childRect } from '../../shared/movers';
 import { getItem } from '../../shared/items';
 import { cloneBody, newBody, stepBody, type Body } from '../../shared/physics';
 import { checkPlacement, type PlaceCheck, type PlaceRequest } from '../../shared/placement';
-import type { Card, ClientMsg, Phase, RoomInfo, ServerMsg } from '../../shared/protocol';
+import type { Card, ClientMsg, DraftStage, Phase, RoomInfo, ServerMsg } from '../../shared/protocol';
 import { applyBodySnap, RaceSim, type PlayerSnap, type RaceEvent, type RaceSnapshot, type SimMover } from '../../shared/race';
 import type { PlayerTally, RoundRow } from '../../shared/scoring';
 import { World } from '../../shared/world';
@@ -26,7 +26,9 @@ export class GameClient {
   room: RoomInfo | null = null;
   phase: Phase = 'lobby';
   round = 0;
-  rounds = 0;
+  /** score to win, whole points */
+  target = 10;
+  draftStage: DraftStage = 'humans';
   endsAt = 0;
   competitive = false;
   tally: Record<string, PlayerTally> = {};
@@ -49,8 +51,8 @@ export class GameClient {
   /** last snapshot's tick and our acked input: input seq s is processed by the server on tick base.tick + (s - base.ack) */
   predBase = { tick: 0, ack: 0 };
   corr = { x: 0, y: 0 };
-  results: { rows: RoundRow[]; competitive: boolean; last: boolean } | null = null;
-  matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[] } | null = null;
+  results: { rows: RoundRow[]; competitive: boolean } | null = null;
+  matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number } | null = null;
   votes: string[] = [];
   toasts: Toast[] = [];
   fx: Fx[] = [];
@@ -156,7 +158,7 @@ export class GameClient {
         this.toast(m.msg, 'bad');
         break;
       case 'phase':
-        this.phase = m.phase; this.round = m.round; this.rounds = m.rounds; this.competitive = m.competitive; this.tally = m.tally;
+        this.phase = m.phase; this.round = m.round; this.target = m.target; this.competitive = m.competitive; this.tally = m.tally;
         this.endsAt = performance.now() + m.endsIn;
         if (m.phase === 'lobby') this.toLobbyState();
         if (m.phase === 'draft') { this.placedThisRound = false; this.results = null; this.matchEnd = null; this.awaitingPlace = false; this.race = null; this.pred = null; }
@@ -166,7 +168,7 @@ export class GameClient {
         if (m.phase === 'countdown') this.onEvent({ type: 'countdown' });
         break;
       case 'world': this.world = World.fromJSON(m.world); this.refreshCheck(); break;
-      case 'draft': this.cards = m.cards; this.demolition = m.demolition; this.courseOpen = m.open !== false; break;
+      case 'draft': this.cards = m.cards; this.demolition = m.demolition; this.courseOpen = m.open !== false; this.draftStage = m.stage; break;
       case 'claimed': {
         const c = this.cards.find(k => k.id === m.card);
         if (c) c.by = m.by;
@@ -202,8 +204,8 @@ export class GameClient {
         }
         break;
       case 'snap': this.onSnap(m.s, m.ev); break;
-      case 'results': this.results = { rows: m.rows, competitive: m.competitive, last: m.last }; this.onEvent({ type: 'results' }); break;
-      case 'matchEnd': this.matchEnd = { order: m.order, winners: m.winners, tally: m.tally, votes: m.votes }; this.votes = m.votes; break;
+      case 'results': this.results = { rows: m.rows, competitive: m.competitive }; this.onEvent({ type: 'results' }); break;
+      case 'matchEnd': this.matchEnd = { order: m.order, winners: m.winners, tally: m.tally, votes: m.votes, target: m.target, rows: m.rows, round: m.round }; this.votes = m.votes; if (m.winners.includes(this.you)) this.onEvent({ type: 'results' }); break;
       case 'votes': this.votes = m.votes; break;
       case 'pong': break;
     }

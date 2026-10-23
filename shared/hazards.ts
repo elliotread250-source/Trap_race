@@ -1,8 +1,8 @@
 // Hazard geometry as pure functions of the object and its phase, shared by the server sim, renderer and bots.
 import { CELL, HAZARD, PHYS } from './config';
-import { DIRS, rotDirIndex, rotVec, type Rect, type Vec } from './grid';
+import { circleRect, DIRS, rotDirIndex, rotVec, type Cell, type Rect, type Vec } from './grid';
 import { getItem } from './items';
-import { spikeStripPx, springPadPx, wireStripPx, type PlacedObject, type World } from './world';
+import { spikeStripPx, splitRspike, springPadPx, wireStripPx, type PlacedObject, type World } from './world';
 
 export const C = CELL;
 
@@ -21,6 +21,23 @@ export function rspikeState(phase: number): 'in' | 'warn' | 'out' {
   if (p < HAZARD.rspikeIn - HAZARD.rspikeWarn) return 'in';
   if (p < HAZARD.rspikeIn) return 'warn';
   return 'out';
+}
+
+/** Spike and base cells of a retracting-spike assembly (see splitRspike in world.ts). */
+export function rspikeParts(o: PlacedObject): { base: Cell[]; spikes: Cell[] } { return splitRspike(o.cells, o.rot); }
+
+// ---- spiky oval: a 3x1 (or 1x3) ellipse covered in spikes; lethal over the ellipse, not the empty corners of its box
+export interface OvalShape { cx: number; cy: number; rx: number; ry: number }
+export function ovalShape(o: PlacedObject): OvalShape {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of o.cells) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const w = (x1 - x0 + 1) * C, h = (y1 - y0 + 1) * C;
+  return { cx: x0 * C + w / 2, cy: y0 * C + h / 2, rx: w / 2 - 1, ry: h / 2 - 1 };
+}
+/** Does the ellipse touch the rect? Scale space so the ellipse is a unit circle (an axis-aligned rect stays one). */
+export function ovalHitsRect(ov: OvalShape, r: Rect): boolean {
+  const sx = 1 / ov.rx, sy = 1 / ov.ry;
+  return circleRect(0, 0, 1, { x: (r.x - ov.cx) * sx, y: (r.y - ov.cy) * sy, w: r.w * sx, h: r.h * sy });
 }
 
 // ---- laser: off (with warning at the end) then on
@@ -87,25 +104,14 @@ export function pendulumSweep(o: PlacedObject): Vec[] {
   return pts;
 }
 
-// ---- moving platform: 3x1 (rotated) glides along rotated right, path clipped against solids and protected zones
+// ---- moving platform: 3x1 (rotated) glides along rotated right through anything that is in its way
 export function moverBaseRect(o: PlacedObject): Rect {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const [x, y] of o.cells) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
   return { x: minX * C, y: minY * C, w: (maxX - minX + 1) * C, h: (maxY - minY + 1) * C };
 }
-export function moverPathLen(world: World, o: PlacedObject): number {
-  const r = moverBaseRect(o);
-  const t = DIRS[rotDirIndex(1, o.rot)];
-  const max = HAZARD.movingPathCells * C;
-  for (let d = 4; d <= max; d += 4) {
-    const x = r.x + t.x * d, y = r.y + t.y * d;
-    const x0 = Math.floor(x / C), x1 = Math.floor((x + r.w - 0.01) / C), y0 = Math.floor(y / C), y1 = Math.floor((y + r.h - 0.01) / C);
-    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
-      if (world.solidCell(cx, cy) || !world.inBounds(cx, cy) || world.isProtectedCell(cx, cy) || world.reservedAt(cx, cy)) return d - 4;
-    }
-  }
-  return max;
-}
+/** Endpoint-to-endpoint travel of the 3x1 Moving Platform (px). Walls never shorten it: it slides straight through them. */
+export function moverPathLen(): number { return HAZARD.movingPathCells * C; }
 export function moverRect(o: PlacedObject, phase: number, pathLen: number): Rect {
   const r = moverBaseRect(o);
   const t = DIRS[rotDirIndex(1, o.rot)];
@@ -135,19 +141,24 @@ export function muzzle(o: PlacedObject): Vec {
 
 export function springDir(o: PlacedObject): Vec { return DIRS[rotDirIndex(0, o.rot)]; }
 
-export interface StaticLethal { rects: { r: Rect; owner: string | null; src: string }[]; circles: { x: number; y: number; r: number; owner: string | null; src: string }[] }
+export interface StaticLethal {
+  rects: { r: Rect; owner: string | null; src: string }[];
+  circles: { x: number; y: number; r: number; owner: string | null; src: string }[];
+  ovals: { ov: OvalShape; owner: string | null; src: string }[];
+}
 
-/** Always-on lethal shapes: spikes, barbed wire and black hole cores. */
+/** Always-on lethal shapes: spiky ovals, barbed wire and black hole cores. */
 export function staticLethal(world: World): StaticLethal {
   const rects: StaticLethal['rects'] = [];
   const circles: StaticLethal['circles'] = [];
+  const ovals: StaticLethal['ovals'] = [];
   for (const o of world.objects.values()) {
     const k = getItem(o.item).kind;
-    if (k === 'spikes') for (const [x, y] of o.cells) rects.push({ r: spikeStripPx(x, y, o.rot), owner: o.owner, src: o.id });
+    if (k === 'oval') ovals.push({ ov: ovalShape(o), owner: o.owner, src: o.id });
     if (k === 'wire') for (const [x, y] of o.cells) rects.push({ r: wireStripPx(x, y, o.rot), owner: o.owner, src: o.id });
     if (k === 'blackhole') { const c = cellCenter(o.x, o.y); circles.push({ x: c.x, y: c.y, r: HAZARD.holeCore, owner: o.owner, src: o.id }); }
   }
-  return { rects, circles };
+  return { rects, circles, ovals };
 }
 
 export function springRect(o: PlacedObject): Rect { return springPadPx(o.x, o.y, o.rot); }

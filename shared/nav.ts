@@ -3,7 +3,8 @@
 // and unlimited same-wall wall jumps. This is a conservative sampled search, not a proof of solvability.
 import { CELL, HAZARD, PHYS } from './config';
 import { circleRect, rectsOverlap, type Rect } from './grid';
-import { cellCenter, moverBaseRect, springDir, springRect, staticLethal, type StaticLethal } from './hazards';
+import { fieldAccel, type HoleInfo } from './field';
+import { cellCenter, moverBaseRect, ovalHitsRect, springDir, springRect, staticLethal, type StaticLethal } from './hazards';
 import { getItem } from './items';
 import { childCount, childId, childRect, motionOf, sweepOf } from './movers';
 import { IN_DOWN, IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
@@ -40,28 +41,13 @@ interface KinChild { o: PlacedObject; child: number; id: string; key: number; pe
 
 type Ctrl = (f: number, b: Body) => number;
 
-export interface HoleInfo { x: number; y: number; owner: string | null; src: string }
+export type { HoleInfo };
 
-/** Shared black-hole pull used by both the race sim and probes. */
+/** Shared black-hole pull used by probes (the race sim uses the same field). */
 export function holeAccel(world: World, holes: HoleInfo[], b: Body, blocked: (x0: number, y0: number, x1: number, y1: number) => boolean) {
   const cx = b.x + W / 2, cy = b.y + H / 2;
   if (world.inProtectedPx(cx, cy)) return null;
-  let ax = 0, ay = 0, strongest = 0, src: HoleInfo | null = null;
-  for (const h of holes) {
-    const dx = h.x - cx, dy = h.y - cy;
-    const d = Math.hypot(dx, dy);
-    if (d >= HAZARD.holeRadius || d < 1) continue;
-    if (blocked(h.x, h.y, cx, cy)) continue;
-    const a = HAZARD.holeMaxPull * (1 - d / HAZARD.holeRadius);
-    const ux = dx / d, uy = dy / d;
-    if (b.vx * ux + b.vy * uy > HAZARD.holeMaxAffectedSpeed) continue;
-    ax += ux * a; ay += uy * a;
-    if (a > strongest) { strongest = a; src = h; }
-  }
-  const mag = Math.hypot(ax, ay);
-  if (mag === 0) return null;
-  if (mag > HAZARD.holeMaxTotal) { ax *= HAZARD.holeMaxTotal / mag; ay *= HAZARD.holeMaxTotal / mag; }
-  return { ax, ay, src, strongest };
+  return fieldAccel(holes, cx, cy, blocked);
 }
 
 /** Grid ray through static solids. */
@@ -167,7 +153,7 @@ export class Prober {
       this.setTick(f + 1);
       stepBody(b, 0, this.timedEnv!);
       this.steps++;
-      if (!b.grounded || this.timedEnv!.movers[b.groundMover]?.id !== k.id || this.lethalAt(b.x, b.y)) ok = false;
+      if (b.crushMover >= 0 || !b.grounded || this.timedEnv!.movers[b.groundMover]?.id !== k.id || this.lethalAt(b.x, b.y)) ok = false;
     }
     this.rideSafe.set(k.key, ok);
     return ok;
@@ -202,6 +188,7 @@ export class Prober {
     const r: Rect = { x, y, w: W, h: H };
     for (const l of this.lethal.rects) if (rectsOverlap(r, l.r)) return true;
     for (const c of this.lethal.circles) if (circleRect(c.x, c.y, c.r, r)) return true;
+    for (const l of this.lethal.ovals) if (ovalHitsRect(l.ov, r)) return true;
     return false;
   }
 
@@ -281,7 +268,7 @@ export class Prober {
       }
       path[f * 2] = Math.round(b.x); path[f * 2 + 1] = Math.round(b.y);
       if (b.x < minX) minX = b.x; if (b.x > maxX) maxX = b.x; if (b.y < minY) minY = b.y; if (b.y > maxY) maxY = b.y;
-      if (b.y > killY || this.lethalAt(b.x, b.y)) { done(); return null; }
+      if (b.y > killY || b.crushMover >= 0 || this.lethalAt(b.x, b.y)) { done(); return null; }
       const bbox = () => ({ x: minX - CELL, y: minY - CELL, w: maxX - minX + W + 2 * CELL, h: maxY - minY + H + 2 * CELL });
       if (b.x < fin.x + fin.w && b.x + W > fin.x && b.y < fin.y + fin.h && b.y + H > fin.y) {
         done();

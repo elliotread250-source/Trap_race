@@ -9,6 +9,9 @@ import type { MapDef } from '../../shared/maps';
 import type { Body } from '../../shared/physics';
 import type { RaceSim } from '../../shared/race';
 import { footprint, TERRAIN_ID, type PlacedObject, type World } from '../../shared/world';
+import { fieldAccel, segmentTouchesField, traceShot, type HoleInfo, type ShotSeg } from '../../shared/field';
+import { staticRayBlocked } from '../../shared/nav';
+import type { PlaceCheck } from '../../shared/placement';
 import { NavGraph } from '../../shared/nav';
 import { drawBlackHole, drawCharacter, drawCoinShape, drawGondola, drawItem, drawShuttleBody, drawWheelHub, PLAYER_COLORS, type AnimState } from './art';
 import { drawAmbient, drawSceneryBackground, hasScenery, paintSceneryTerrain, type ViewInfo } from './scenery';
@@ -18,6 +21,13 @@ import { settings } from './store';
 
 const C = CELL;
 const BW = PHYS.bodyW, BH = PHYS.bodyH;
+
+/** Black holes on the course, as field sources. */
+function holesOf(world: World): HoleInfo[] {
+  const out: HoleInfo[] = [];
+  for (const o of world.objects.values()) if (getItem(o.item).kind === 'blackhole') { const c = cellCenter(o.x, o.y); out.push({ x: c.x, y: c.y, owner: o.owner, src: o.id }); }
+  return out;
+}
 
 export interface Camera { x: number; y: number; zoom: number }
 
@@ -65,6 +75,24 @@ export class Renderer {
   }
 
   particleBudget() { return settings.particles === 'low' ? 0.35 : settings.particles === 'high' ? 1.6 : 1; }
+
+  /** Instant sniper shots leave a short-lived tracer along the exact evaluated path. */
+  private tracers: { pts: number[]; t0: number }[] = [];
+  addTracer(pts: number[]) { this.tracers.push({ pts, t0: performance.now() }); if (this.tracers.length > 12) this.tracers.shift(); }
+  private drawTracers() {
+    if (!this.tracers.length) return;
+    const ctx = this.ctx, now = performance.now(), life = HAZARD.sniperTracerS * 1000;
+    this.tracers = this.tracers.filter(t => now - t.t0 < life);
+    ctx.save();
+    for (const t of this.tracers) {
+      const a = 1 - (now - t.t0) / life;
+      ctx.strokeStyle = `rgba(255,246,205,${(0.75 * a).toFixed(3)})`; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(t.pts[0], t.pts[1]);
+      for (let i = 2; i < t.pts.length; i += 2) ctx.lineTo(t.pts[i], t.pts[i + 1]);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   burst(x: number, y: number, n: number, color: string, speed = 160, grav = 600, size = 3) {
     const count = Math.round(n * this.particleBudget());
@@ -302,8 +330,8 @@ export class Renderer {
     const t = this.t;
     const hzByObj = new Map<string, number>();
     if (sim) sim.hz.forEach(h => hzByObj.set(h.o.id, h.phase));
-    const broken = new Set<string>();
-    if (sim) for (const c of sim.crumbles.values()) if (c.broken) broken.add(c.o.id);
+    const broken = new Set<string>(), cracked = new Set<string>();
+    if (sim) for (const c of sim.crumbles.values()) { if (c.broken) broken.add(c.o.id); else if (c.hp < HAZARD.crumbleHits) cracked.add(c.o.id); }
     const usedPick = new Set<string>();
     if (sim) for (const p of sim.pickups) if (!p.available) usedPick.add(p.id);
     const coinAtOrigin = new Set<string>();
@@ -323,7 +351,7 @@ export class Renderer {
         // bomb aiming freezes every moving platform at its GO pose, the pose bombs target
         const frozen = demo;
         const tick = frozen ? 0 : g.renderTick();
-        if (g.phase === 'build' || g.phase === 'draft') this.drawLane(o, targets.has(o.id) || g.check?.reserved === o.id ? 'rgba(255,90,60,' : 'rgba(127,240,224,');
+        if (g.phase === 'build' || g.phase === 'draft') this.drawLane(o, targets.has(o.id) ? 'rgba(255,90,60,' : 'rgba(127,240,224,');
         this.drawKinematic(o, tick, col, false);
         if (demo && targets.has(o.id)) {
           ctx.save(); ctx.strokeStyle = '#ff5a2a'; ctx.lineWidth = 4; ctx.fillStyle = 'rgba(255,90,40,.3)';
@@ -334,7 +362,7 @@ export class Renderer {
         continue;
       }
       if (def.kind === 'moving') {
-        const len = sim ? sim.movers.find(m => m.o.id === o.id)?.hz?.pathLen ?? 0 : moverPathLen(world, o);
+        const len = sim ? sim.movers.find(m => m.o.id === o.id)?.hz?.pathLen ?? 0 : moverPathLen();
         const r = moverRect(o, phase, len);
         if (!sim || g.phase === 'build') this.drawMoverPath(o, len);
         const dx = r.x - o.cells[0][0] * C, dy = r.y - o.cells[0][1] * C;
@@ -351,6 +379,7 @@ export class Renderer {
       if (def.kind === 'laser') state = laserState(phase);
       if (def.kind === 'sniper' && sim) { const since = (sim.tick / TICK_HZ) % HAZARD.sniperInterval; state = since > HAZARD.sniperInterval - HAZARD.sniperWarn ? 'warn' : undefined; }
       if (def.kind === 'power' && usedPick.has(o.id)) state = 'used';
+      if (def.kind === 'crumble' && cracked.has(o.id)) state = 'cracked';
       drawItem(ctx, def, o.cells, 0, 0, o.rot, { owner: col, t, state, variant: o.variant, mapProv: o.prov === 'map' });
       // dynamic parts
       if (def.kind === 'saw') {
@@ -382,8 +411,8 @@ export class Renderer {
     }
   }
 
-  /** A moving platform's reserved lane and rider headroom (shown only while drafting and building). */
-  private drawLane(o: PlacedObject, color: string, cells?: { sweep: [number, number][]; headroom: [number, number][] }) {
+  /** Every cell a moving platform passes over (shown while drafting and building). It reserves nothing. */
+  private drawLane(o: PlacedObject, color: string, cells?: { sweep: [number, number][] }) {
     const ctx = this.ctx;
     const sw = cells ?? sweepOf(o);
     ctx.save();
@@ -391,8 +420,6 @@ export class Renderer {
     for (const [x, y] of sw.sweep) ctx.fillRect(x * C, y * C, C, C);
     ctx.strokeStyle = color + '.35)'; ctx.lineWidth = 1;
     for (const [x, y] of sw.sweep) ctx.strokeRect(x * C + 0.5, y * C + 0.5, C - 1, C - 1);
-    ctx.setLineDash([2, 5]); ctx.strokeStyle = color + '.3)';
-    for (const [x, y] of sw.headroom) ctx.strokeRect(x * C + 4, y * C + 4, C - 8, C - 8);
     ctx.restore();
   }
 
@@ -483,7 +510,7 @@ export class Renderer {
     ctx.restore();
     // ghost art
     if (def.kind !== 'bomb') {
-      if (def.kind === 'sniper' || def.kind === 'cannon' || def.kind === 'crossbow' || def.kind === 'dart') this.drawAim(world, def.kind, r, cells);
+      if (def.kind === 'sniper' || def.kind === 'cannon' || def.kind === 'crossbow') this.drawAim(world, def.kind, r, cells);
       if (def.kind === 'blackhole') { /* drawn by item art with radius */ }
       if (def.kind === 'pendulum') {
         const o = { id: '_', item, owner: null, prov: 'player' as const, x: r.x, y: r.y, rot: r.rot as Rot, variant: 0, cells, attach: null, round: 0 };
@@ -497,9 +524,10 @@ export class Renderer {
       }
       if (def.kind === 'moving') {
         const o = { id: '_', item, owner: null, prov: 'player' as const, x: r.x, y: r.y, rot: r.rot as Rot, variant: 0, cells, attach: null, round: 0 };
-        this.drawMoverPath(o, moverPathLen(world, o));
+        this.drawMoverPath(o, moverPathLen());
+        if (chk?.wallCells?.length) this.drawWallOverlap(chk.wallCells);
       }
-      if (def.kind === 'shuttle' || def.kind === 'wheel') { this.drawMoverPreview(world, def.kind, r, cells, ok); }
+      if (def.kind === 'shuttle' || def.kind === 'wheel') { this.drawMoverPreview(world, def.kind, r, cells, ok, chk); }
       else drawItem(ctx, def, cells, 0, 0, r.rot as Rot, { ghost: true, owner: '#ffd25e', t: this.t, variant: r.variant, state: 'out' });
     } else {
       const n = def.bombSize ?? 1;
@@ -523,14 +551,16 @@ export class Renderer {
    * Moving platform preview: the whole swept lane and rider headroom it will reserve, the GO pose solid, a ghost moving
    * along the real path, the direction of travel and the timing. Validity never depends on the animation.
    */
-  private drawMoverPreview(world: World, kind: 'shuttle' | 'wheel', r: { item: string; x: number; y: number; rot: number; variant: number }, cells: [number, number][], ok: boolean) {
+  private drawMoverPreview(world: World, kind: 'shuttle' | 'wheel', r: { item: string; x: number; y: number; rot: number; variant: number }, cells: [number, number][], ok: boolean, chk: PlaceCheck | null) {
     const ctx = this.ctx;
     const o: PlacedObject = { id: '_', item: r.item, owner: null, prov: 'player', x: r.x, y: r.y, rot: r.rot as Rot, variant: r.variant, cells, attach: null, round: 0, mv: newMotion(r.item, r.variant) };
-    this.drawLane(o, ok ? 'rgba(80,240,140,' : 'rgba(255,80,90,');
+    this.drawLane(o, ok ? 'rgba(80,240,140,' : 'rgba(255,80,90,', chk?.sweep ? { sweep: chk.sweep } : undefined);
     const m = o.mv!;
     const tick = ((performance.now() / 1000) * 60) % m.period;
     this.drawKinematic(o, tick, '#ffd25e', true);
     this.drawKinematic(o, 0, ok ? '#50f08c' : '#ff505a', false);
+    if (kind === 'wheel') this.drawWheelValidity(o, chk);
+    if (chk?.wallCells?.length) this.drawWallOverlap(chk.wallCells);
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
     let label: string;
@@ -547,7 +577,8 @@ export class Renderer {
       const a0 = wheelAngle(o, 0, 0) + (m.dir ?? 1) * 0.5;
       const ax = p.x + Math.cos(a0) * R, ay = p.y + Math.sin(a0) * R, tx = -Math.sin(a0) * (m.dir ?? 1), ty = Math.cos(a0) * (m.dir ?? 1);
       ctx.beginPath(); ctx.moveTo(ax + tx * 12, ay + ty * 12); ctx.lineTo(ax - ty * 8 - tx * 4, ay + tx * 8 - ty * 4); ctx.lineTo(ax + ty * 8 - tx * 4, ay - tx * 8 - ty * 4); ctx.fill();
-      label = `${m.dir === -1 ? 'Counter-clockwise' : 'Clockwise'}, one lap every ${(m.period / 60).toFixed(0)}s · centre is open`;
+      const nOk = chk?.validChildren?.length ?? 0;
+      label = `${m.dir === -1 ? 'Counter-clockwise' : 'Clockwise'}, one lap every ${(m.period / 60).toFixed(0)}s · ${nOk} of 4 gondolas start in open space (1 needed)`;
     }
     ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'left';
     const bb = sweepOf(o).bbox;
@@ -556,6 +587,33 @@ export class Renderer {
     ctx.fillStyle = '#dff'; ctx.fillText(label, bb.x + 7, bb.y + bb.h + 20);
     ctx.restore();
     void world;
+  }
+
+  /** Wheel preview: gondolas that start in open space get a green frame, the others an amber one. Amber is not an error. */
+  private drawWheelValidity(o: PlacedObject, chk: PlaceCheck | null) {
+    const ctx = this.ctx;
+    const valid = new Set(chk?.validChildren ?? []);
+    ctx.save();
+    ctx.lineWidth = 4;
+    for (let i = 0; i < childCount(o); i++) {
+      const r = childRect(o, i, 0);
+      const good = valid.has(i);
+      ctx.strokeStyle = good ? 'rgba(80,255,150,.95)' : 'rgba(255,190,70,.9)';
+      ctx.setLineDash(good ? [] : [7, 5]);
+      ctx.strokeRect(r.x + 2, r.y + 2, r.w - 4, r.h - 4);
+    }
+    // start cells that sit inside terrain or items: shown, not forbidden
+    ctx.fillStyle = 'rgba(255,170,50,.28)';
+    for (const [x, y] of chk?.overlapCells ?? []) ctx.fillRect(x * C, y * C, C, C);
+    ctx.restore();
+  }
+
+  /** Cells of a platform's starting body that are inside a wall (allowed, as long as it is not wholly inside). */
+  private drawWallOverlap(cells: [number, number][]) {
+    const ctx = this.ctx;
+    ctx.save(); ctx.fillStyle = 'rgba(255,170,50,.3)'; ctx.strokeStyle = 'rgba(255,190,70,.9)'; ctx.setLineDash([5, 4]); ctx.lineWidth = 2;
+    for (const [x, y] of cells) { ctx.fillRect(x * C, y * C, C, C); ctx.strokeRect(x * C + 2, y * C + 2, C - 4, C - 4); }
+    ctx.restore();
   }
 
   private drawAim(world: World, kind: string, r: { x: number; y: number; rot: number; variant: number; item: string }, cells: [number, number][]) {
@@ -573,13 +631,32 @@ export class Renderer {
         ctx.lineTo(x, y);
         if (world.solidCell(Math.floor(x / C), Math.floor(y / C)) || world.inProtectedPx(x, y) || y > world.h * C) break;
       }
+    } else if (kind === 'sniper') {
+      // the same path the server will evaluate, black-hole bend included (it ignores players, which it would pierce)
+      const holes = holesOf(world);
+      const seg = (ax: number, ay: number, bx: number, by: number): ShotSeg => {
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 12));
+        for (let i = 1; i <= n; i++) {
+          const x = ax + ((bx - ax) * i) / n, y = ay + ((by - ay) * i) / n;
+          if (world.solidCell(Math.floor(x / C), Math.floor(y / C)) || world.inProtectedPx(x, y)) return { stop: true, ex: x, ey: y };
+        }
+        return { stop: false, ex: bx, ey: by };
+      };
+      const pts = traceShot(holes, m.x, m.y, d.x, d.y, (a, b2, c2, d2) => staticRayBlocked(world, a, b2, c2, d2), seg, { w: world.w * C, h: world.h * C });
+      for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]);
+      if (holes.length && segmentTouchesField(holes, m.x, m.y, m.x + d.x * 4000, m.y + d.y * 4000)) { ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 12px sans-serif'; ctx.fillText('bends near black holes', m.x + 8, m.y - 14); ctx.beginPath(); }
     } else {
-      let x = m.x, y = m.y;
-      for (let i = 0; i < 400; i++) {
-        x += d.x * 8; y += d.y * 8;
-        if (world.solidCell(Math.floor(x / C), Math.floor(y / C)) || world.inProtectedPx(x, y) || x < 0 || x > world.w * C) break;
+      // arrows: straight outside fields, bent inside them, so the line never promises a safe path that will curve into a player
+      let x = m.x, y = m.y, vx = d.x * HAZARD.arrowSpeed, vy = d.y * HAZARD.arrowSpeed;
+      const holes = holesOf(world);
+      for (let i = 0; i < 900; i++) {
+        const f = holes.length ? fieldAccel(holes, x, y, (a, b2, c2, d2) => staticRayBlocked(world, a, b2, c2, d2), HAZARD.holeProjectileMul) : null;
+        if (f) { vx += f.ax / 60; vy += f.ay / 60; }
+        x += vx / 60; y += vy / 60;
+        ctx.lineTo(x, y);
+        if (world.solidCell(Math.floor(x / C), Math.floor(y / C)) || world.inProtectedPx(x, y) || x < 0 || y < 0 || x > world.w * C || y > world.h * C) break;
+        if (holes.some(h => Math.hypot(h.x - x, h.y - y) <= HAZARD.holeCore)) break;
       }
-      ctx.lineTo(x, y);
     }
     ctx.stroke();
     ctx.restore();
@@ -594,15 +671,14 @@ export class Renderer {
       if (c.state === 'dropped') drawCoinShape(ctx, c.x, c.y + Math.sin(t * 4) * 2, 12, t);
       if (c.state === 'lost') { ctx.save(); ctx.globalAlpha = 0.35; drawCoinShape(ctx, c.x, c.y, 10, 0); ctx.restore(); }
     }
+    this.drawTracers();
     // projectiles (extrapolated from the last snapshot)
     const since = g.rehearsal ? 0 : Math.min(0.12, (performance.now() - g.lastSnapAt) / 1000);
     for (const p of sim.projectiles) {
       const x = p.x + p.vx * since, y = p.y + p.vy * since + (p.kind === 'cannon' ? 0.5 * HAZARD.cannonGravity * since * since : 0);
       const ang = Math.atan2(p.vy, p.vx);
       ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-      if (p.kind === 'sniper') { const gr = ctx.createLinearGradient(-60, 0, 6, 0); gr.addColorStop(0, 'rgba(255,240,150,0)'); gr.addColorStop(1, 'rgba(255,250,200,1)'); ctx.fillStyle = gr; ctx.fillRect(-60, -2, 66, 4); }
-      else if (p.kind === 'arrow') { ctx.strokeStyle = '#6b4424'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-18, 0); ctx.lineTo(8, 0); ctx.stroke(); ctx.fillStyle = '#ccd'; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(5, -4); ctx.lineTo(5, 4); ctx.fill(); ctx.fillStyle = '#ff5e8a'; ctx.fillRect(-20, -3, 5, 6); }
-      else if (p.kind === 'dart') { ctx.fillStyle = '#c9d19c'; ctx.fillRect(-10, -2, 16, 4); ctx.fillStyle = '#7aa04a'; ctx.fillRect(-12, -3, 4, 6); }
+      if (p.kind === 'arrow') { ctx.strokeStyle = '#6b4424'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-18, 0); ctx.lineTo(8, 0); ctx.stroke(); ctx.fillStyle = '#ccd'; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(5, -4); ctx.lineTo(5, 4); ctx.fill(); ctx.fillStyle = '#ff5e8a'; ctx.fillRect(-20, -3, 5, 6); }
       else { ctx.fillStyle = '#20202c'; ctx.beginPath(); ctx.arc(0, 0, HAZARD.cannonBallR, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(-4, -4, 4, 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }

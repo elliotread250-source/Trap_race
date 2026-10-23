@@ -1,9 +1,9 @@
 // Persistent course state: immutable map terrain plus placed objects, an occupancy grid and a derived collision grid.
-import { CELL, HAZARD, PROTECT_PAD_CELLS } from './config';
+import { CELL, CONTENT_VERSION, HAZARD, PROTECT_PAD_CELLS } from './config';
 import { DIRS, rotDirIndex, rotateMask, type Cell, type Rect, type Rot } from './grid';
-import { getItem, type ItemDef } from './items';
+import { getItem, ITEMS, LEGACY_ITEMS, type ItemDef } from './items';
 import { getMap, type MapDef } from './maps';
-import { sweepOf, type Motion } from './movers';
+import { newMotion, type Motion } from './movers';
 
 export type Provenance = 'map' | 'player';
 
@@ -46,12 +46,10 @@ export class World {
   collDir: Uint8Array; // one-way normal / conveyor normal
   surf: Uint8Array;
   collObj: (string | null)[];
-  /** cell -> id of the kinematic platform whose swept lane covers it ('' if none) */
-  reserved: string[];
-  /** cell -> id of the kinematic platform needing this cell free of solids as rider headroom ('' if none) */
-  headroom: string[];
   /** kinematic platform objects in a stable order (numeric id), shared by server and clients */
   kinematic: PlacedObject[] = [];
+  /** coins that were carried to the flag: gone for the rest of the match (tombstones, so nothing can bring them back) */
+  consumed = new Set<string>();
   version = 0;
   nextId = 1;
   readonly spawnPx: Rect;
@@ -74,8 +72,6 @@ export class World {
     this.collDir = new Uint8Array(n);
     this.surf = new Uint8Array(n);
     this.collObj = new Array(n).fill(null);
-    this.reserved = new Array(n).fill('');
-    this.headroom = new Array(n).fill('');
     const m = this.map;
     this.spawnPx = { x: m.spawn.x * CELL, y: m.spawn.y * CELL, w: m.spawn.w * CELL, h: m.spawn.h * CELL };
     this.finishPx = { x: m.finish.x * CELL, y: m.finish.y * CELL, w: m.finish.w * CELL, h: m.finish.h * CELL };
@@ -96,8 +92,6 @@ export class World {
   idx(x: number, y: number) { return y * this.w + x; }
   terrainAt(x: number, y: number): number { return this.inBounds(x, y) ? this.terrain[this.idx(x, y)] : 0; }
   occAt(x: number, y: number): string { return this.inBounds(x, y) ? this.occ[this.idx(x, y)] : TERRAIN_ID; }
-  reservedAt(x: number, y: number): string { return this.inBounds(x, y) ? this.reserved[this.idx(x, y)] : ''; }
-  headroomAt(x: number, y: number): string { return this.inBounds(x, y) ? this.headroom[this.idx(x, y)] : ''; }
 
   /** Recompute occupancy and collision from terrain + objects. */
   rebuild() {
@@ -109,25 +103,20 @@ export class World {
       this.collDir[i] = 0;
       this.surf[i] = t === 2 ? S_ICE : S_NORMAL;
       this.collObj[i] = null;
-      this.reserved[i] = '';
-      this.headroom[i] = '';
     }
     this.kinematic = [];
     for (const o of this.objects.values()) {
       const def = getItem(o.item);
       const kin = def.kind === 'shuttle' || def.kind === 'wheel';
-      if (kin) {
-        this.kinematic.push(o);
-        const sw = sweepOf(o);
-        for (const [x, y] of sw.sweep) if (this.inBounds(x, y)) this.reserved[this.idx(x, y)] = o.id;
-        for (const [x, y] of sw.headroom) if (this.inBounds(x, y)) this.headroom[this.idx(x, y)] = o.id;
-      }
+      if (kin) this.kinematic.push(o);
+      // the retracting-spike assembly is solid only under its spikes (its base); everything else solid is solid all over
+      const baseKeys = def.kind === 'rspikes' ? new Set(rspikeBase(o).map(c => c[1] * this.w + c[0])) : null;
       for (const [x, y] of o.cells) {
         if (!this.inBounds(x, y)) continue;
         const i = this.idx(x, y);
         this.occ[i] = o.id;
         if (def.kind === 'moving' || kin) continue; // dynamic, not in the static grid
-        if (def.solid) { this.coll[i] = C_SOLID; this.collObj[i] = o.id; }
+        if (def.solid || (baseKeys && baseKeys.has(i))) { this.coll[i] = C_SOLID; this.collObj[i] = o.id; }
         if (def.kind === 'oneway') { this.coll[i] = C_ONEWAY; this.collDir[i] = rotDirIndex(0, o.rot); this.collObj[i] = o.id; }
         if (def.kind === 'conveyor') { this.surf[i] = S_CONVEYOR; this.collDir[i] = rotDirIndex(1, o.rot); } // belt tangent
       }
@@ -169,23 +158,100 @@ export class World {
   playerObjectCount(): number { let n = 0; for (const o of this.objects.values()) if (o.prov === 'player') n++; return n; }
 
   toJSON(): WorldSnapshot {
-    return { mapId: this.map.id, version: this.version, nextId: this.nextId, objects: [...this.objects.values()] };
+    return { mapId: this.map.id, content: CONTENT_VERSION, version: this.version, nextId: this.nextId, objects: [...this.objects.values()], consumed: [...this.consumed] };
   }
 
-  static fromJSON(s: WorldSnapshot): World {
+  /** Builds a world from a snapshot, migrating data saved under an older content version first (never throws on legacy items). */
+  static fromJSON(s0: WorldSnapshot): World {
+    const s = migrateSnapshot(s0).snapshot;
     const w = new World(s.mapId);
     w.objects.clear();
     for (const o of s.objects) w.objects.set(o.id, { ...o, cells: o.cells.map(c => [c[0], c[1]] as Cell), mv: o.mv ? { ...o.mv } : undefined });
+    w.consumed = new Set(s.consumed ?? []);
     w.nextId = s.nextId;
     w.rebuild();
     w.version = s.version;
     return w;
   }
 
+  /** A coin carried to the flag is removed for the rest of the match. Idempotent: consuming twice changes nothing. */
+  consumeCoin(id: string): boolean {
+    if (this.consumed.has(id)) return false;
+    this.consumed.add(id);
+    if (this.objects.delete(id)) this.rebuild();
+    return true;
+  }
+
   clone(): World { return World.fromJSON(JSON.parse(JSON.stringify(this.toJSON()))); }
 }
 
-export interface WorldSnapshot { mapId: string; version: number; nextId: number; objects: PlacedObject[] }
+export interface WorldSnapshot { mapId: string; content?: number; version: number; nextId: number; objects: PlacedObject[]; consumed?: string[] }
+
+/**
+ * Retracting spikes are one assembly: a solid 2x1 base block with the spike row on its outward face. The outward normal
+ * is "up" at rotation 0 and turns with the item, so for any rotation the spike cells are the two furthest along it.
+ */
+export function splitRspike(cells: readonly Cell[], rot: Rot | number): { base: Cell[]; spikes: Cell[] } {
+  const n = DIRS[rotDirIndex(0, rot)];
+  const key = (c: Cell) => c[0] * n.x + c[1] * n.y;
+  let best = -Infinity;
+  for (const c of cells) best = Math.max(best, key(c));
+  const spikes: Cell[] = [], base: Cell[] = [];
+  for (const c of cells) (key(c) === best ? spikes : base).push([c[0], c[1]]);
+  return { base, spikes };
+}
+export function rspikeBase(o: PlacedObject): Cell[] { return splitRspike(o.cells, o.rot).base; }
+
+export interface Migration { snapshot: WorldSnapshot; converted: string[]; removed: string[] }
+
+/**
+ * Brings a saved world up to the current content version. Removed items (Dart Launcher) are dropped; the Spike Strip
+ * becomes a Spiky Oval and the old flat Retracting Spikes gain their base block, but only when the bigger shape fits
+ * on free cells of the same place. Otherwise the instance is removed and reported, never squeezed in among neighbours.
+ */
+export function migrateSnapshot(s: WorldSnapshot): Migration {
+  if ((s.content ?? 1) >= CONTENT_VERSION) return { snapshot: s, converted: [], removed: [] };
+  const base = new World(s.mapId);
+  const taken = new Set<string>();
+  for (const o of s.objects) if (ITEMS[o.item] || o.item in LEGACY_ITEMS) for (const [x, y] of o.cells) taken.add(`${x},${y}`);
+  const free = (cells: Cell[], own: Cell[]) => {
+    const mine = new Set(own.map(c => `${c[0]},${c[1]}`));
+    return cells.every(([x, y]) => base.inBounds(x, y) && !base.terrainAt(x, y) && (mine.has(`${x},${y}`) || !taken.has(`${x},${y}`)));
+  };
+  const out: PlacedObject[] = [], converted: string[] = [], removed: string[] = [];
+  for (const o of s.objects) {
+    let item = o.item;
+    let cells = o.cells.map(c => [c[0], c[1]] as Cell);
+    let x = o.x, y = o.y;
+    if (o.item in LEGACY_ITEMS) {
+      const repl = LEGACY_ITEMS[o.item];
+      if (!repl) { removed.push(o.id); continue; }
+      const t = DIRS[rotDirIndex(1, o.rot)];
+      const last = cells.reduce((a, c) => (c[0] * t.x + c[1] * t.y > a[0] * t.x + a[1] * t.y ? c : a));
+      const next: Cell = [last[0] + t.x, last[1] + t.y];
+      const grown: Cell[] = [...cells, next];
+      if (!free(grown, cells)) { removed.push(o.id); continue; }
+      item = repl; cells = grown;
+    } else if (!ITEMS[o.item]) { removed.push(o.id); continue; }
+    else if (o.item === 'rspikes' && cells.length === 2) {
+      const n = DIRS[rotDirIndex(0, o.rot)];
+      const under: Cell[] = cells.map(([cx, cy]) => [cx - n.x, cy - n.y] as Cell);
+      const all: Cell[] = [...cells, ...under];
+      if (!free(all, cells)) { removed.push(o.id); continue; }
+      cells = all;
+    } else if (o.mv && (o.item === 'shuttle' || o.item === 'wheel')) {
+      // a stored motion definition is authoritative; this one predates the longer shuttle lane, so refresh it
+      const mv = newMotion(o.item, o.variant);
+      if (mv) { out.push({ ...o, mv }); continue; }
+    } else { out.push(o); continue; }
+    cells.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    x = Math.min(...cells.map(c => c[0])); y = Math.min(...cells.map(c => c[1]));
+    for (const [cx, cy] of cells) taken.add(`${cx},${cy}`);
+    out.push({ ...o, item, cells, x, y, attach: null, mv: undefined });
+    converted.push(o.id);
+  }
+  return { snapshot: { ...s, content: CONTENT_VERSION, objects: out }, converted, removed };
+}
 
 /** Wire geometry: anchor cell sits outside the support face; normal = rotated up; extends along rotated right. */
 export function wireDirs(rot: Rot | number) {

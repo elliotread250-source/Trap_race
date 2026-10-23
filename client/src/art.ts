@@ -3,6 +3,7 @@
 import { CELL, HAZARD, MOVERS, PHYS } from '../../shared/config';
 import { DIRS, rotDirIndex, rotateMask, type Rot } from '../../shared/grid';
 import { getItem, type ItemDef } from '../../shared/items';
+import { splitRspike } from '../../shared/world';
 
 export const PLAYER_COLORS = ['#ffd25e', '#3ee0c5', '#ff5e8a', '#7aa8ff', '#b07aff', '#7bea5c', '#ff9b4a', '#f2f2f2', '#ff6ad5', '#5ad1ff'];
 
@@ -252,22 +253,44 @@ export function drawItem(ctx: CanvasRenderingContext2D, def: ItemDef, cells: [nu
       break;
     }
     case 'crumble': {
+      const cracked = o.state === 'cracked';
       for (const [cx, cy] of cells) {
         const [x, y] = px(cx, cy);
-        ctx.fillStyle = '#b59a7a'; ctx.fillRect(x, y, C, C);
+        ctx.fillStyle = cracked ? '#a58868' : '#b59a7a'; ctx.fillRect(x, y, C, C);
+        ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fillRect(x + 3, y + 3, C - 6, 5);
         ctx.strokeStyle = '#6b5640'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(x + 10, y); ctx.lineTo(x + 18, y + 18); ctx.lineTo(x + 12, y + 30); ctx.moveTo(x + 18, y + 18); ctx.lineTo(x + 34, y + 24); ctx.lineTo(x + 40, y + C); ctx.stroke();
+        if (cracked) {
+          // obviously damaged: one more hit and it is gone for the round
+          ctx.beginPath(); ctx.moveTo(x + 10, y); ctx.lineTo(x + 18, y + 18); ctx.lineTo(x + 12, y + 30); ctx.moveTo(x + 18, y + 18); ctx.lineTo(x + 34, y + 24); ctx.lineTo(x + 40, y + C); ctx.moveTo(x + 30, y); ctx.lineTo(x + 26, y + 12); ctx.lineTo(x + 34, y + 24); ctx.stroke();
+          ctx.fillStyle = 'rgba(40,25,10,.28)'; ctx.fillRect(x, y + C - 10, C, 10);
+        } else { ctx.globalAlpha *= 0.55; ctx.beginPath(); ctx.moveTo(x + 8, y + 30); ctx.lineTo(x + 16, y + 34); ctx.moveTo(x + 30, y + 14); ctx.lineTo(x + 38, y + 10); ctx.stroke(); ctx.globalAlpha = o.ghost ? 0.6 : 1; }
       }
       outlineCells(ctx, cells, ax, ay, own);
       break;
     }
-    case 'spikes': case 'rspikes': {
+    case 'oval': {
+      drawSpikyOval(ctx, cells, ax, ay);
+      outlineCells(ctx, cells, ax, ay, own, 0.3);
+      break;
+    }
+    case 'rspikes': {
+      // one assembly: a solid base block with the spikes rising from its outward face
+      const parts = splitRspike(cells, rot);
       const n = rotDirIndex(0, rot);
-      const ext = def.kind === 'spikes' ? 1 : o.state === 'out' ? 1 : o.state === 'warn' ? 0.35 : 0.08;
-      for (const [cx, cy] of cells) {
+      const ext = o.state === 'out' ? 1 : o.state === 'warn' ? 0.35 : 0.08;
+      for (const [cx, cy] of parts.base) {
+        const [x, y] = px(cx, cy);
+        ctx.fillStyle = '#4d5470'; ctx.fillRect(x, y, C, C);
+        ctx.fillStyle = '#6a7394'; ctx.fillRect(x + 3, y + 3, C - 6, 6);
+        ctx.fillStyle = '#383e55'; ctx.fillRect(x, y + C - 8, C, 8);
+        ctx.strokeStyle = 'rgba(15,12,30,.6)'; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, C - 2, C - 2);
+        ctx.fillStyle = '#8f98b8'; for (const [bx, by] of [[8, 14], [C - 8, 14]]) { ctx.beginPath(); ctx.arc(x + bx, y + by, 2.5, 0, Math.PI * 2); ctx.fill(); }
+      }
+      for (const [cx, cy] of parts.spikes) {
         const [x, y] = px(cx, cy);
         ctx.save(); ctx.translate(x + C / 2, y + C / 2); ctx.rotate((n * Math.PI) / 2);
-        ctx.fillStyle = '#4a4f63'; ctx.fillRect(-C / 2, C / 2 - 5, C, 5);
+        // slots in the top of the base show where the spikes retract into
+        ctx.fillStyle = '#1d2030'; ctx.fillRect(-C / 2 + 3, C / 2 - 4, C - 6, 4);
         ctx.fillStyle = o.state === 'warn' ? '#ffb0a0' : '#dfe4ef'; ctx.strokeStyle = '#5b6074'; ctx.lineWidth = 1.5;
         const h = HAZARD.spikeHeight * ext;
         for (let i = 0; i < 4; i++) {
@@ -290,17 +313,22 @@ export function drawItem(ctx: CanvasRenderingContext2D, def: ItemDef, cells: [nu
       outlineCells(ctx, cells, ax, ay, own, 0.3);
       break;
     }
-    case 'dart': case 'laser': case 'cannon': case 'crossbow': case 'sniper': {
+    case 'laser': case 'cannon': case 'crossbow': case 'sniper': {
       const [x, y] = px(cells[0][0], cells[0][1]);
       drawLauncher(ctx, def, x, y, rot, o);
       outlineCells(ctx, cells, ax, ay, own, 0.6);
       break;
     }
     case 'pendulum': {
+      // a real 1x1 solid pivot block with the axe's hinge bolted to it
       const [x, y] = px(cells[0][0], cells[0][1]);
-      ctx.fillStyle = '#3b3f52'; ctx.beginPath(); ctx.arc(x + C / 2, y + C / 2, 9, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#9aa1b8'; ctx.beginPath(); ctx.arc(x + C / 2, y + C / 2, 4, 0, Math.PI * 2); ctx.fill();
-      outlineCells(ctx, cells, ax, ay, own, 0.3);
+      ctx.fillStyle = '#59607a'; ctx.fillRect(x, y, C, C);
+      ctx.fillStyle = '#7b83a3'; ctx.fillRect(x + 3, y + 3, C - 6, 6);
+      ctx.fillStyle = '#3d435a'; ctx.fillRect(x, y + C - 8, C, 8);
+      ctx.strokeStyle = 'rgba(15,12,30,.6)'; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, C - 2, C - 2);
+      ctx.fillStyle = '#2b2f40'; ctx.beginPath(); ctx.arc(x + C / 2, y + C / 2, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#c3c9de'; ctx.beginPath(); ctx.arc(x + C / 2, y + C / 2, 4, 0, Math.PI * 2); ctx.fill();
+      outlineCells(ctx, cells, ax, ay, own, 0.6);
       break;
     }
     case 'blackhole': {
@@ -410,6 +438,31 @@ export function drawBlackHole(ctx: CanvasRenderingContext2D, x: number, y: numbe
   ctx.restore();
 }
 
+/** An elongated oval covered in spikes, filling its 3x1 (or 1x3) footprint. */
+export function drawSpikyOval(ctx: CanvasRenderingContext2D, cells: [number, number][], ax: number, ay: number) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [cx, cy] of cells) { x0 = Math.min(x0, cx); y0 = Math.min(y0, cy); x1 = Math.max(x1, cx); y1 = Math.max(y1, cy); }
+  const w = (x1 - x0 + 1) * C, h = (y1 - y0 + 1) * C;
+  const cx = ax + x0 * C + w / 2, cy = ay + y0 * C + h / 2;
+  const rx = w / 2 - 1, ry = h / 2 - 1, sp = 9; // spike length
+  const n = Math.max(14, Math.round((w + h) / 11));
+  ctx.save();
+  ctx.fillStyle = '#e4e8f2'; ctx.strokeStyle = '#4c5168'; ctx.lineWidth = 1.2;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2, da = Math.PI / n * 0.8;
+    const bx = (aa: number) => cx + Math.cos(aa) * (rx - sp * 0.6), by = (aa: number) => cy + Math.sin(aa) * (ry - sp * 0.6);
+    // outward normal of the ellipse at angle a
+    let nx = Math.cos(a) / rx, ny = Math.sin(a) / ry; const nl = Math.hypot(nx, ny); nx /= nl; ny /= nl;
+    ctx.beginPath(); ctx.moveTo(bx(a - da), by(a - da)); ctx.lineTo(cx + Math.cos(a) * (rx - 1) + nx * 0, cy + Math.sin(a) * (ry - 1) + ny * 0); ctx.lineTo(bx(a + da), by(a + da)); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  const g = ctx.createLinearGradient(cx, cy - ry, cx, cy + ry);
+  g.addColorStop(0, '#7b829e'); g.addColorStop(1, '#2f3347');
+  ctx.fillStyle = g; ctx.strokeStyle = '#1b1e2c'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(cx, cy, rx - sp * 0.7, ry - sp * 0.7, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.beginPath(); ctx.ellipse(cx - rx * 0.15, cy - ry * 0.25, (rx - sp) * 0.5, Math.max(2, (ry - sp) * 0.25), 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 function drawLauncher(ctx: CanvasRenderingContext2D, def: ItemDef, x: number, y: number, rot: Rot, o: ItemDrawOpts) {
   const cx = x + C / 2, cy = y + C / 2;
   ctx.save();
@@ -420,7 +473,8 @@ function drawLauncher(ctx: CanvasRenderingContext2D, def: ItemDef, x: number, y:
     ctx.fillStyle = '#4b5068'; rr(ctx, cx - 12, cy - 12, 24, 10, 3); ctx.fill();
     ctx.fillStyle = '#2b2f40'; ctx.fillRect(face > 0 ? cx + 4 : cx - 26, cy - 9, 22, 4);
     ctx.fillStyle = '#7ad1ff'; ctx.beginPath(); ctx.arc(cx - face * 4, cy - 14, 4, 0, Math.PI * 2); ctx.fill();
-    if (o.state === 'warn') { ctx.strokeStyle = 'rgba(255,40,40,.75)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx + face * 24, cy - 7); ctx.lineTo(cx + face * 900, cy - 7); ctx.stroke(); }
+    // restrained pre-fire cue: a small glint at the muzzle, not a beam across the level
+    if (o.state === 'warn') { const g = ctx.createRadialGradient(cx + face * 24, cy - 7, 0, cx + face * 24, cy - 7, 9); g.addColorStop(0, 'rgba(255,230,200,.95)'); g.addColorStop(1, 'rgba(255,120,80,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx + face * 24, cy - 7, 9, 0, Math.PI * 2); ctx.fill(); }
     ctx.restore();
     return;
   }
@@ -437,11 +491,6 @@ function drawLauncher(ctx: CanvasRenderingContext2D, def: ItemDef, x: number, y:
       ctx.fillStyle = '#7a4a26'; rr(ctx, -16, -5, 30, 10, 3); ctx.fill();
       ctx.strokeStyle = '#3b2412'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(4, 0, 18, -1.2, 1.2); ctx.stroke();
       ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(4 + Math.cos(-1.2) * 18, Math.sin(-1.2) * 18); ctx.lineTo(-8, 0); ctx.lineTo(4 + Math.cos(1.2) * 18, Math.sin(1.2) * 18); ctx.stroke();
-    } else if (def.kind === 'dart') {
-      ctx.fillStyle = '#5e6b54'; rr(ctx, -22, -22, 44, 44, 6); ctx.fill();
-      ctx.fillStyle = '#3a4434'; rr(ctx, -16, -16, 32, 32, 4); ctx.fill();
-      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(16, 0, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#c9d19c'; ctx.fillRect(-10, -3, 14, 6);
     } else if (def.kind === 'laser') {
       ctx.fillStyle = '#39324f'; rr(ctx, -22, -22, 44, 44, 8); ctx.fill();
       ctx.fillStyle = o.state === 'on' ? '#ff3b6a' : o.state === 'warn' ? '#ffb347' : '#5a5370';

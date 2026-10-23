@@ -1,8 +1,8 @@
 // Placement and demolition rules. The client preview and the server call the same functions with the same integers.
 import { CELL, HAZARD, MATCH } from './config';
-import type { Cell, Rect, Rot } from './grid';
+import { DIRS, rotDirIndex, type Cell, type Rect, type Rot } from './grid';
 import { pendulumSweep } from './hazards';
-import { isKinematic, newMotion, referenceHit, sweepOf } from './movers';
+import { cellsTouched, childCount, childRect, isKinematic, newMotion, referenceHit, sweepOf } from './movers';
 import { getItem, ITEMS, SUPPORT_KINDS, type ItemDef } from './items';
 import { NavGraph } from './nav';
 import { C_SOLID, footprint, TERRAIN_ID, type PlacedObject, World } from './world';
@@ -20,14 +20,22 @@ export interface PlaceCheck {
   dependents?: string[]; // bomb: attached objects removed with them
   warning?: string;
   region?: Rect | null;
-  /** moving platforms: the swept lane and rider headroom the placement would reserve (shown in the build preview) */
+  /** moving platforms: every cell the platform passes over (shown in the build preview; reserves nothing) */
   sweep?: Cell[];
-  headroom?: Cell[];
-  /** id of the moving platform whose reserved space blocked this placement */
-  reserved?: string;
+  /** Ferris wheel: gondolas whose whole starting body is in legal open space (at least one is needed), and the start cells that overlap terrain or items */
+  validChildren?: number[];
+  overlapCells?: Cell[];
+  /** platforms that start partly inside a wall: how many of their start cells are wall (shown in the preview) */
+  wallCells?: Cell[];
 }
 
 const KINEMATIC = new Set(['shuttle', 'wheel']);
+
+function rectOfCells(cells: Cell[]): Rect {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of cells) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return { x: x0 * CELL, y: y0 * CELL, w: (x1 - x0 + 1) * CELL, h: (y1 - y0 + 1) * CELL };
+}
 
 const isInt = (v: unknown) => typeof v === 'number' && Number.isInteger(v);
 
@@ -76,7 +84,7 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
     // nothing bolts onto moving platforms: attachments on moving bodies aren't supported
     const n = def.kind === 'sniper' ? [0, 1] : [[0, 1], [-1, 0], [0, -1], [1, 0]][rot];
     const sx = req.x + n[0], sy = req.y + n[1];
-    const id = world.occAt(sx, sy) || world.reservedAt(sx, sy);
+    const id = world.occAt(sx, sy);
     const so = id && id !== TERRAIN_ID ? world.objects.get(id) : null;
     if (so && isKinematic(so)) return fail(`${def.kind === 'sniper' ? 'Snipers' : 'Barbed wire'} can't attach to moving platforms`, [[req.x, req.y]]);
   }
@@ -88,18 +96,23 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
   for (const [x, y] of cells) {
     if (!world.inBounds(x, y) || !inBuild(x, y)) return fail('Outside the build area', cells);
   }
+  // Platforms that glide through walls may start partly inside terrain, never wholly (checked below); everything else is ordinary occupancy.
+  const wallOk = def.kind === 'shuttle' || def.kind === 'moving';
+  const wallCells: Cell[] = [];
   for (const [x, y] of cells) {
     const o = world.occAt(x, y);
-    if (o === TERRAIN_ID) return fail('Overlaps the map terrain', cells);
+    if (o === TERRAIN_ID) {
+      const t = world.terrainAt(x, y);
+      if (wallOk && (t === 1 || t === 2)) { wallCells.push([x, y]); continue; }
+      return fail('Overlaps the map terrain', cells);
+    }
     if (o) {
       const other = world.objects.get(o);
       const od = other ? getItem(other.item) : null;
       return fail(od?.solid ? 'Overlaps another solid object' : `Overlaps ${od ? 'a ' + od.name : 'another item'}`, cells);
     }
-    const lane = world.reservedAt(x, y);
-    if (lane) return fail(`Inside the path of a ${world.objects.get(lane) ? getItem(world.objects.get(lane)!.item).name : 'moving platform'}`, cells, { reserved: lane });
-    if (def.solid && world.headroomAt(x, y)) return fail('Too close above a moving platform: riders would be crushed', cells, { reserved: world.headroomAt(x, y) });
   }
+  if (wallOk && wallCells.length === cells.length) return fail('A moving platform can’t start completely inside a wall', cells, { wallCells });
   for (const [x, y] of cells) {
     if (world.isProtectedCell(x, y)) {
       const s = world.protectedCells[0];
@@ -108,28 +121,39 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
     }
   }
   let support: string | null = fp.support;
-  if (KINEMATIC.has(def.kind)) {
+  if (KINEMATIC.has(def.kind) || def.kind === 'moving') {
     const probe: PlacedObject = { id: '_probe', item: def.id, owner: null, prov: 'player', x: req.x, y: req.y, rot, variant: req.variant, cells, attach: null, round: 0, mv: newMotion(def.id, req.variant) };
-    const sw = sweepOf(probe);
-    const own = new Set(cells.map(([x, y]) => `${x},${y}`));
-    for (const [x, y] of sw.sweep) {
-      if (!world.inBounds(x, y) || !inBuild(x, y)) return fail('Its path leaves the build area', cells, { sweep: sw.sweep, headroom: sw.headroom });
-      if (own.has(`${x},${y}`)) continue;
-      const o = world.occAt(x, y);
-      if (o === TERRAIN_ID) return fail('Its path runs into the map terrain', cells, { sweep: sw.sweep, headroom: sw.headroom });
-      if (o) { const other = world.objects.get(o); return fail(`Its path runs into ${other ? 'a ' + getItem(other.item).name : 'another item'}`, cells, { sweep: sw.sweep, headroom: sw.headroom }); }
-      if (world.reservedAt(x, y)) return fail('Its path crosses another moving platform’s path', cells, { sweep: sw.sweep, headroom: sw.headroom });
-      if (world.headroomAt(x, y)) return fail('Its path cuts through the space riders need above another moving platform', cells, { sweep: sw.sweep, headroom: sw.headroom });
-      if (world.isProtectedCell(x, y)) return fail('Its path enters a safety zone', cells, { sweep: sw.sweep, headroom: sw.headroom });
+    // the whole route must stay on the map and out of the start and finish safety zones; walls, blocks and other platforms are no obstacle
+    let travel: Cell[];
+    let bbox: Rect;
+    if (def.kind === 'moving') {
+      const t = DIRS[rotDirIndex(1, rot)], len = HAZARD.movingPathCells * CELL;
+      const r0 = rectOfCells(cells), r1 = { ...r0, x: r0.x + t.x * len, y: r0.y + t.y * len };
+      travel = [...cellsTouched(r0), ...cellsTouched(r1), ...cellsTouched({ x: Math.min(r0.x, r1.x), y: Math.min(r0.y, r1.y), w: r0.w + Math.abs(t.x) * len, h: r0.h + Math.abs(t.y) * len })];
+      bbox = { x: Math.min(r0.x, r1.x), y: Math.min(r0.y, r1.y), w: r0.w + Math.abs(t.x) * len, h: r0.h + Math.abs(t.y) * len };
+    } else { const sw = sweepOf(probe); travel = sw.sweep; bbox = sw.bbox; }
+    const shown = def.kind === 'moving' ? undefined : travel;
+    for (const [x, y] of travel) {
+      if (!world.inBounds(x, y)) return fail(def.kind === 'moving' ? 'Its path would leave the map' : 'Its path leaves the map', cells, { sweep: shown, wallCells });
+      if (world.isProtectedCell(x, y)) return fail('Its path enters a safety zone', cells, { sweep: shown, wallCells });
     }
-    for (const [x, y] of sw.headroom) {
-      if (!world.inBounds(x, y)) return fail('No headroom for riders at the top of its path', cells, { sweep: sw.sweep, headroom: sw.headroom });
-      const t = world.terrainAt(x, y);
-      if (t === 1 || t === 2 || world.coll[world.idx(x, y)] === C_SOLID) return fail('Riders would be crushed against something solid above its path', cells, { sweep: sw.sweep, headroom: sw.headroom });
-      if (world.reservedAt(x, y)) return fail('Its riders would be hit by another moving platform', cells, { sweep: sw.sweep, headroom: sw.headroom });
+    const extra: Partial<PlaceCheck> = { sweep: shown, wallCells };
+    if (def.kind === 'wheel') {
+      // at least one whole gondola must start in legal open space; the others may begin inside blocks and terrain and still orbit
+      const valid: number[] = [], overlap: Cell[] = [];
+      for (let i = 0; i < childCount(probe); i++) {
+        let ok = true;
+        for (const [x, y] of cellsTouched(childRect(probe, i, 0))) {
+          const bad = !world.inBounds(x, y) || !inBuild(x, y) || world.occAt(x, y) !== '' || world.isProtectedCell(x, y);
+          if (bad) { ok = false; if (world.inBounds(x, y) && world.occAt(x, y) !== '') overlap.push([x, y]); }
+        }
+        if (ok) valid.push(i);
+      }
+      extra.validChildren = valid; extra.overlapCells = overlap;
+      if (valid.length === 0) return fail('At least one gondola has to start in open space', cells, { sweep: shown, validChildren: valid, overlapCells: overlap });
     }
-    if (world.playerObjectCount() >= MATCH.maxPlacedObjects) return fail('The course is full', cells);
-    return { ok: true, cells, support: null, trimmed: 0, region: { x: sw.bbox.x - CELL, y: sw.bbox.y - CELL, w: sw.bbox.w + 2 * CELL, h: sw.bbox.h + 2 * CELL }, sweep: sw.sweep, headroom: sw.headroom };
+    if (world.playerObjectCount() >= MATCH.maxPlacedObjects) return fail('The course is full', cells, extra);
+    return { ok: true, cells, support: null, trimmed: 0, region: { x: bbox.x - CELL, y: bbox.y - CELL, w: bbox.w + 2 * CELL, h: bbox.h + 2 * CELL }, ...extra };
   }
   if (def.kind === 'sniper') {
     const owner = world.supportOwner(req.x, req.y + 1);
@@ -165,7 +189,7 @@ function regionOf(world: World, ids: string[]): Rect | null {
     const o = world.objects.get(id);
     if (!o) continue;
     cells.push(...o.cells);
-    if (isKinematic(o)) { const sw = sweepOf(o); cells.push(...sw.sweep, ...sw.headroom); }
+    if (isKinematic(o)) cells.push(...sweepOf(o).sweep);
     const k = getItem(o.item).kind;
     if (k === 'blackhole') pad = Math.max(pad, HAZARD.holeRadius + CELL);
     if (k === 'pendulum') pad = Math.max(pad, HAZARD.pendulumArm + CELL);
@@ -196,34 +220,33 @@ export function makeObject(world: World, req: PlaceRequest, chk: PlaceCheck, own
   };
 }
 
-/** Full validation including the cumulative route probe. Returns the derived nav graph for reuse on success. */
-export function validatePlacement(world: World, req: PlaceRequest, nav: NavGraph | null): { check: PlaceCheck; nav: NavGraph | null } {
+/**
+ * Advisory route assessment for bots and optional warnings. It NEVER decides whether a placement is accepted: any
+ * placement that passes checkPlacement is legal even when it seals the course. `blocksRoute` is true when the placement
+ * would leave no route to the flag on a course that had one.
+ */
+export function assessPlacement(world: World, req: PlaceRequest, nav: NavGraph | null): { check: PlaceCheck; nav: NavGraph | null; blocksRoute: boolean; cutsProgress: boolean } {
   const check = checkPlacement(world, req);
-  if (!check.ok) return { check, nav };
+  if (!check.ok) return { check, nav, blocksRoute: false, cutsProgress: false };
   const def = getItem(req.item);
   const test = world.clone();
   if (def.kind === 'bomb') {
     for (const id of [...check.targets!, ...check.dependents!]) test.objects.delete(id);
     test.rebuild();
     const g = nav ? NavGraph.derive(nav, test, check.region ?? null) : new NavGraph(test);
-    const r = g.reach(false);
-    if (!r.finish) check.warning = 'Warning: the course still looks blocked after this blast';
-    return { check, nav: g };
+    return { check, nav: g, blocksRoute: false, cutsProgress: false };
   }
   const obj = makeObject(test, req, check, '_probe', 0);
   test.objects.set(obj.id, obj);
   test.rebuild();
   const g = nav ? NavGraph.derive(nav, test, check.region ?? null) : new NavGraph(test);
   const r = g.reach(false);
-  if (!r.finish) {
-    // staged check: if the course had no full route before either, only reject placements that cut off progress
-    const before = (nav ?? new NavGraph(world)).reach(false);
-    if (before.finish) return { check: { ...check, ok: false, reason: 'That would block every route to the flag' }, nav };
-    const pb = progressOf(world, before.visited), pa = progressOf(test, r.visited);
-    if (pa.stage < pb.stage || (pa.stage === pb.stage && pa.dist > pb.dist + 0.01)) return { check: { ...check, ok: false, reason: 'That would cut players off from the furthest point they can reach' }, nav };
-    check.warning = 'No full route to the flag yet: keep building toward it';
-  }
-  return { check, nav: g };
+  if (r.finish) return { check, nav: g, blocksRoute: false, cutsProgress: false };
+  const before = (nav ?? new NavGraph(world)).reach(false);
+  if (before.finish) return { check, nav: g, blocksRoute: true, cutsProgress: true };
+  const pb = progressOf(world, before.visited), pa = progressOf(test, r.visited);
+  const cuts = pa.stage < pb.stage || (pa.stage === pb.stage && pa.dist > pb.dist + 0.01);
+  return { check, nav: g, blocksRoute: false, cutsProgress: cuts };
 }
 
 /**

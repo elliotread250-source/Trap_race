@@ -2,12 +2,12 @@
 // same physics: no teleporting, no flying, no hazard immunity. Difficulty only changes timing, judgement and mistakes.
 import { BOT_DIFFICULTY, CELL, DT, HAZARD, PHYS, TICK_HZ, type Difficulty } from '../shared/config';
 import { circleRect, rectsOverlap, type Rect } from '../shared/grid';
-import { cellCenter, laserBeamRect, laserState, pendulumPos, rspikeState, sawPos } from '../shared/hazards';
+import { cellCenter, laserBeamRect, laserState, pendulumPos, rspikeParts, rspikeState, sawPos } from '../shared/hazards';
 import { getItem, ITEMS, type ItemDef } from '../shared/items';
 import { FINISH, isMoverKey, moverKey, type NavEdge, type NavGraph } from '../shared/nav';
 import { childRect } from '../shared/movers';
 import { IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT } from '../shared/physics';
-import { airDistance, checkPlacement, progressOf, validatePlacement, type PlaceRequest } from '../shared/placement';
+import { airDistance, assessPlacement, checkPlacement, progressOf, type PlaceRequest } from '../shared/placement';
 import type { Card } from '../shared/protocol';
 import type { RacePlayer, RaceSim } from '../shared/race';
 import { Rng } from '../shared/rng';
@@ -97,10 +97,11 @@ export function botPlacementCandidates(world: World, nav: NavGraph, def: ItemDef
         if (checkPlacement(world, t).ok) { req = t; break; }
       }
     }
-    if (def.kind === 'spikes' || def.kind === 'rspikes') {
-      // spikes sit on a floor: drop to a supported cell
+    if (def.kind === 'oval' || def.kind === 'rspikes') {
+      // these sit best on a floor: drop to a supported cell (the retracting-spike assembly is 2 cells tall)
+      const h = def.kind === 'rspikes' ? 2 : 1;
       let yy = y;
-      while (yy < world.h - 1 && !world.solidCell(x, yy + 1) && yy - y < 4) yy++;
+      while (yy < world.h - h && !world.solidCell(x, yy + h) && yy - y < 4) yy++;
       req = { ...req, y: yy, rot: 0 };
     }
     // keep pickups and hazards off the exact cells the route needs only for hard bots that want risky lines
@@ -146,8 +147,8 @@ export function botBridgeCandidates(world: World, nav: NavGraph, def: ItemDef, r
   const scored: { req: PlaceRequest; p: number }[] = [];
   // full route probes are the expensive part: a few for static pieces, fewer for moving ones (timed edges)
   for (const { req } of cheap.slice(0, def.kind === 'shuttle' || def.kind === 'wheel' ? 3 : 6)) {
-    const { check, nav: g } = validatePlacement(world, req, nav);
-    if (!check.ok || !g) continue;
+    const { check, nav: g, blocksRoute } = assessPlacement(world, req, nav);
+    if (!check.ok || !g || blocksRoute) continue; // bots plan to keep their own way open; the rules themselves would allow sealing it
     const r = g.reach(false);
     const pr = progressOf(g.world, r.visited);
     scored.push({ req, p: r.finish ? 1e9 : pr.stage * 1000 - pr.dist });
@@ -435,7 +436,7 @@ export function edgeSafe(e: NavEdge, sim: RaceSim): boolean {
     const t = f * DT;
     for (const h of sim.hz) {
       const ph = h.phase + t * (h.slowable ? slow : 1);
-      if (h.kind === 'rspikes' && rspikeState(ph) !== 'in' && h.o.cells.some(([cx, cy]) => rectsOverlap(br, spikeStripPx(cx, cy, h.o.rot)))) return false;
+      if (h.kind === 'rspikes' && rspikeState(ph) !== 'in' && rspikeParts(h.o).spikes.some(([cx, cy]) => rectsOverlap(br, spikeStripPx(cx, cy, h.o.rot)))) return false;
       if (h.kind === 'laser' && laserState(ph) !== 'off') { const r = laserBeamRect(h.o, h.beam); if (r && rectsOverlap(br, r)) return false; }
       if (h.kind === 'saw') { const s = sawPos(h.o, ph); if (circleRect(s.x, s.y, HAZARD.sawR + 6, br)) return false; }
       if (h.kind === 'pendulum') { const s = pendulumPos(h.o, ph).ball; if (circleRect(s.x, s.y, HAZARD.pendulumBallR + 6, br)) return false; }
@@ -452,7 +453,8 @@ export function edgeSafe(e: NavEdge, sim: RaceSim): boolean {
       const interval = h.kind === 'sniper' ? HAZARD.sniperInterval : h.kind === 'crossbow' ? HAZARD.crossbowInterval : HAZARD.cannonInterval;
       const tNow = sim.tick / TICK_HZ + t;
       const sinceFire = tNow % interval;
-      if (h.kind === 'sniper' && sinceFire < 0.25) {
+      // the shot lands instantly on the firing tick, so stay off its line from just before it fires until just after
+      if (h.kind === 'sniper' && (sinceFire > interval - 0.2 || sinceFire < 0.05)) {
         const cc = cellCenter(h.o.x, h.o.y);
         if (Math.abs(cc.y - 6 - (y + BH / 2)) < BH / 2 + 4 && (h.o.variant === 1 ? x < cc.x : x > cc.x)) return false;
       }

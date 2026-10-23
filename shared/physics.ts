@@ -1,5 +1,5 @@
 // Player movement: one deterministic fixed-step function used by the server, client prediction, bots and route probes.
-import { CELL, DT, MOVERS, PHYS } from './config';
+import { CELL, DT, HAZARD, MOVERS, PHYS } from './config';
 import { DIRS, type Rect } from './grid';
 import { C_ONEWAY, C_SOLID, S_CONVEYOR, S_ICE, type World } from './world';
 
@@ -13,6 +13,7 @@ export interface Body {
   groundObj: string | null; // object id under the feet (crumble detection)
   groundMover: number; // index of mover stood on, -1 none
   wallDir: number; // -1 left contact, 1 right contact, 0 none
+  wallObj: string | null; // object id of the wall being touched (crumble detection), null for terrain or none
   wallSliding: boolean;
   wallJumpReady: boolean;
   coyote: number;
@@ -27,6 +28,8 @@ export interface Body {
   wallJumped: boolean; // set on the tick a wall jump happened (for effects)
   jumped: boolean;
   landed: boolean;
+  /** Index (in env.movers) of the platform that squeezed this body against something solid this tick, -1 if none. */
+  crushMover: number;
 }
 
 /** A solid moving body this tick: its rect now and the displacement it made since the previous tick. id is a stable child id. */
@@ -45,9 +48,9 @@ export interface PhysEnv {
 
 export function newBody(x: number, y: number): Body {
   return {
-    x, y, vx: 0, vy: 0, grounded: false, groundSurf: 0, groundObj: null, groundMover: -1, wallDir: 0, wallSliding: false,
+    x, y, vx: 0, vy: 0, grounded: false, groundSurf: 0, groundObj: null, groundMover: -1, wallDir: 0, wallObj: null, wallSliding: false,
     wallJumpReady: true, coyote: 0, jumpBuf: 0, prevJump: false, jumpRising: false, assistT: 0, assistDir: 0, lockT: 0, dropT: 0,
-    facing: 1, wallJumped: false, jumped: false, landed: false,
+    facing: 1, wallJumped: false, jumped: false, landed: false, crushMover: -1,
   };
 }
 
@@ -72,48 +75,56 @@ function boxHit(x: number, y: number, m: Mover): boolean {
   return x < m.x + m.w && x + W > m.x && y < m.y + m.h && y + H > m.y;
 }
 
+/** Largest separating shove (px) that still counts as an escape. A bigger overlap means there was no room to get out. */
+const ESCAPE_MAX_PX = 8;
+
 /**
- * A moving platform that runs into a player shoves them clear instead of passing through or crushing them.
- * Deterministic policy, first candidate that works wins: along the platform's motion, onto its top, to the nearer side,
- * to the far side, below it. A candidate must be reachable in a straight line without entering any static solid or
- * another platform, and within MOVERS.resolveMaxPx. Placement keeps rider headroom free above every platform pose, so the
- * top is always available in practice. No damage is ever dealt for being pushed.
+ * Moving platforms versus a body. Overlap deeper than float noise is resolved by the smallest separating shove, away
+ * from the platform and only if that spot is free of static solids and every other platform. If no such shove exists the
+ * body is squeezed between the platform and something solid: b.crushMover is set to the platform's index and the race
+ * kills it once. Nothing is ever teleported through a wall, the hitbox never shrinks and no search for a far-away free
+ * spot is made, so a squeeze cannot be turned into an ejection or an oscillation.
  */
-function resolveMoverContacts(b: Body, env: PhysEnv, riding: number) {
+function resolveSqueeze(b: Body, env: PhysEnv) {
   for (let i = 0; i < env.movers.length; i++) {
     const m = env.movers[i];
-    if (i === riding) continue;
-    const tol = 0.01; // float noise from carrying a rider is not a collision
-    if (!(b.x < m.x + m.w - tol && b.x + W > m.x + tol && b.y < m.y + m.h - tol && b.y + H > m.y + tol)) continue;
-    const cands: [number, number, string][] = [];
-    if (Math.abs(m.dx) >= Math.abs(m.dy) && m.dx !== 0) cands.push([m.dx > 0 ? m.x + m.w : m.x - W, b.y, 'side']);
-    else if (m.dy !== 0) cands.push([b.x, m.dy > 0 ? m.y + m.h : m.y - H, m.dy > 0 ? 'below' : 'top']);
-    cands.push([b.x, m.y - H, 'top']);
-    const leftX = m.x - W, rightX = m.x + m.w;
-    const nearLeft = Math.abs(b.x - leftX) <= Math.abs(b.x - rightX);
-    cands.push([nearLeft ? leftX : rightX, b.y, 'side'], [nearLeft ? rightX : leftX, b.y, 'side'], [b.x, m.y + m.h, 'below']);
-    for (const [tx, ty, kind] of cands) {
-      if (Math.hypot(tx - b.x, ty - b.y) > MOVERS.resolveMaxPx) continue;
-      if (!clearPath(env, b, tx, ty, i)) continue;
-      b.x = tx; b.y = ty;
-      if (kind === 'top') { b.vy = Math.min(b.vy, 0); b.jumpRising = false; }
-      if (kind === 'below') b.vy = Math.max(b.vy, 0);
-      if (kind === 'side') b.vx = tx > m.x ? Math.max(b.vx, 0) : Math.min(b.vx, 0);
+    const px = Math.min(b.x + W, m.x + m.w) - Math.max(b.x, m.x);
+    const py = Math.min(b.y + H, m.y + m.h) - Math.max(b.y, m.y);
+    if (px <= MOVERS.crushTolPx || py <= MOVERS.crushTolPx) continue;
+    const awayX = b.x + W / 2 < m.x + m.w / 2 ? -1 : 1;
+    const awayY = b.y + H / 2 < m.y + m.h / 2 ? -1 : 1;
+    // prefer the shove along the platform's own motion when both are equally small
+    const alongX = Math.abs(m.dx) >= Math.abs(m.dy);
+    const cands: { x: number; y: number; d: number }[] = [
+      { x: b.x + awayX * px, y: b.y, d: px - (alongX ? 1e-6 : 0) },
+      { x: b.x, y: b.y + awayY * py, d: py - (alongX ? 0 : 1e-6) },
+    ].sort((p, q) => p.d - q.d);
+    let freed = false;
+    for (const c of cands) {
+      if (c.d > ESCAPE_MAX_PX) continue;
+      if (!spotFree(env, c.x, c.y, i)) continue;
+      const dx = c.x - b.x, dy = c.y - b.y;
+      b.x = c.x; b.y = c.y;
+      if (dx !== 0) b.vx = dx > 0 ? Math.max(b.vx, 0) : Math.min(b.vx, 0);
+      if (dy !== 0) { if (dy < 0) { b.vy = Math.min(b.vy, 0); b.jumpRising = false; } else b.vy = Math.max(b.vy, 0); }
+      freed = true;
       break;
     }
+    if (!freed && b.crushMover < 0) b.crushMover = i;
   }
 }
 
-/** Straight move from the body to (tx, ty) touching no static solid and no other platform at the end. */
-function clearPath(env: PhysEnv, b: Body, tx: number, ty: number, skip: number): boolean {
-  const n = Math.max(1, Math.ceil(Math.max(Math.abs(tx - b.x), Math.abs(ty - b.y)) / 8));
-  for (let k = 1; k <= n; k++) {
-    const x = b.x + ((tx - b.x) * k) / n, y = b.y + ((ty - b.y) * k) / n;
-    const x0 = Math.floor(x / CELL), x1 = Math.floor((x + W - EPS) / CELL);
-    const y0 = Math.floor(y / CELL), y1 = Math.floor((y + H - EPS) / CELL);
-    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) if (env.isSolid(cx, cy)) return false;
+/** The body fits at (x, y): no static solid and no platform other than `skip` (beyond float noise). */
+function spotFree(env: PhysEnv, x: number, y: number, skip: number): boolean {
+  const x0 = Math.floor(x / CELL), x1 = Math.floor((x + W - EPS) / CELL);
+  const y0 = Math.floor(y / CELL), y1 = Math.floor((y + H - EPS) / CELL);
+  for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) if (env.isSolid(cx, cy)) return false;
+  const tol = MOVERS.crushTolPx;
+  for (let j = 0; j < env.movers.length; j++) {
+    if (j === skip) continue;
+    const m = env.movers[j];
+    if (x < m.x + m.w - tol && x + W > m.x + tol && y < m.y + m.h - tol && y + H > m.y + tol) return false;
   }
-  for (let j = 0; j < env.movers.length; j++) if (j !== skip && boxHit(tx, ty, env.movers[j])) return false;
   return true;
 }
 
@@ -216,14 +227,16 @@ function probeGround(b: Body, env: PhysEnv) {
 function probeWall(b: Body, env: PhysEnv): number {
   const y0 = Math.floor((b.y + 2) / CELL), y1 = Math.floor((b.y + H - 2) / CELL);
   let left = false, right = false;
+  let rObj: string | null = null, lObj: string | null = null;
+  const w = env.world;
   const rx = b.x + W, lx = b.x;
   if (Math.abs(rx - Math.round(rx / CELL) * CELL) < 0.6) {
     const cx = Math.round(rx / CELL);
-    for (let cy = y0; cy <= y1; cy++) if (env.isSolid(cx, cy)) right = true;
+    for (let cy = y0; cy <= y1; cy++) if (env.isSolid(cx, cy)) { right = true; if (!rObj && w.inBounds(cx, cy)) rObj = w.collObj[w.idx(cx, cy)]; }
   }
   if (Math.abs(lx - Math.round(lx / CELL) * CELL) < 0.6) {
     const cx = Math.round(lx / CELL) - 1;
-    for (let cy = y0; cy <= y1; cy++) if (env.isSolid(cx, cy)) left = true;
+    for (let cy = y0; cy <= y1; cy++) if (env.isSolid(cx, cy)) { left = true; if (!lObj && w.inBounds(cx, cy)) lObj = w.collObj[w.idx(cx, cy)]; }
   }
   for (const m of env.movers) {
     if (b.y + 2 < m.y + m.h && b.y + H - 2 > m.y) {
@@ -231,9 +244,10 @@ function probeWall(b: Body, env: PhysEnv): number {
       if (Math.abs(lx - (m.x + m.w)) < 0.6) left = true;
     }
   }
-  if (right && !left) return 1;
-  if (left && !right) return -1;
-  if (left && right) return b.facing >= 0 ? 1 : -1;
+  b.wallObj = null;
+  if (right && !left) { b.wallObj = rObj; return 1; }
+  if (left && !right) { b.wallObj = lObj; return -1; }
+  if (left && right) { b.wallObj = b.facing >= 0 ? rObj : lObj; return b.facing >= 0 ? 1 : -1; }
   return 0;
 }
 
@@ -286,8 +300,9 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
     moveX(b, env, m.dx, riding); // carried against everything except the platform itself
     moveY(b, env, m.dy, riding);
   }
-  // platforms that caught the body this tick push it clear (riders were carried above, so their own platform is clear)
-  if (env.movers.length) resolveMoverContacts(b, env, riding);
+  // platforms that caught the body this tick shove it clear if there is room; otherwise it is squeezed (crushMover)
+  b.crushMover = -1;
+  if (env.movers.length) resolveSqueeze(b, env);
 
   // horizontal control
   const maxSpeed = (sprint ? PHYS.sprintSpeed : PHYS.walkSpeed) * env.speedMul;
@@ -312,7 +327,13 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
   b.vy += PHYS.gravity * dt;
   if (env.accel) {
     const a = env.accel(b);
-    if (a) { b.vx += a.ax * dt; b.vy += a.ay * dt; }
+    if (a) {
+      // inside a gravity field the pull may add speed only up to holeMaxSpeed (faster bodies, e.g. off a spring, keep theirs)
+      const before = Math.hypot(b.vx, b.vy);
+      b.vx += a.ax * dt; b.vy += a.ay * dt;
+      const after = Math.hypot(b.vx, b.vy), limit = Math.max(before, HAZARD.holeMaxSpeed);
+      if (after > limit) { b.vx *= limit / after; b.vy *= limit / after; }
+    }
   }
 
   // wall slide: airborne, falling, in contact, not steering away
@@ -349,8 +370,7 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / PHYS.maxSubstepPx));
   for (let i = 0; i < steps; i++) { moveX(b, env, dx / steps); moveY(b, env, dy / steps); }
 
-  // resolve being pushed inside a moving platform
-  if (env.movers.length && overlapsSolid(env, b.x, b.y)) pushOut(b, env);
+  if (env.movers.length) resolveSqueeze(b, env);
 
   probeGround(b, env);
   if (b.grounded) {
@@ -371,14 +391,6 @@ function isOnOnewayOnly(b: Body, env: PhysEnv): boolean {
     if (onewayAt(env, cx, cy) === 0) ow = true;
   }
   return ow && b.groundMover < 0;
-}
-
-function pushOut(b: Body, env: PhysEnv) {
-  for (let r = 1; r <= 24; r++) {
-    for (const [ox, oy] of [[0, -r], [r, 0], [-r, 0], [0, r]]) {
-      if (!overlapsSolid(env, b.x + ox, b.y + oy)) { b.x += ox; b.y += oy; return; }
-    }
-  }
 }
 
 export function bodyRect(b: Body): Rect { return { x: b.x, y: b.y, w: W, h: H }; }

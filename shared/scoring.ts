@@ -1,4 +1,4 @@
-// Server-side scoring. Idempotent: rows are computed from the round's unique events, never accumulated from callbacks.
+// Server-side scoring in integer tenths of a point. Idempotent: rows are computed from the round's unique events, never accumulated from callbacks.
 import { SCORING, TICK_HZ } from './config';
 import type { PlayerStatus, RaceEvent } from './race';
 
@@ -22,8 +22,9 @@ export interface PlayerTally { score: number; finishes: number; finishTime: numb
 /**
  * @param roster participants at round start (decides competitiveness, never changes mid-round)
  * @param competitive true when the round started with 2+ competitors (bots count)
+ * @param outcomeKnown nobody is still racing, so the sole-finisher bonus can be decided. Callers scoring mid-race pass false.
  */
-export function scoreRound(roster: string[], competitive: boolean, events: RaceEvent[], statuses: Map<string, PlayerStatus>, prev: Map<string, PlayerTally>): RoundRow[] {
+export function scoreRound(roster: string[], competitive: boolean, events: RaceEvent[], statuses: Map<string, PlayerStatus>, prev: Map<string, PlayerTally>, outcomeKnown = true): RoundRow[] {
   const inRoster = new Set(roster);
   const seen = new Set<string>();
   const unique = events.filter(e => (seen.has(e.id) ? false : (seen.add(e.id), true)));
@@ -37,7 +38,7 @@ export function scoreRound(roster: string[], competitive: boolean, events: RaceE
       if (e.type !== 'death' || !e.credit || e.credit === e.pid || victims.has(e.pid)) continue;
       if (!inRoster.has(e.credit) || !inRoster.has(e.pid)) continue;
       victims.add(e.pid);
-      trapPts.set(e.credit, Math.min(SCORING.trapCapPerRound, (trapPts.get(e.credit) ?? 0) + SCORING.trapElim));
+      trapPts.set(e.credit, Math.min(SCORING.trapCapElimsPerRound * SCORING.trapElim, (trapPts.get(e.credit) ?? 0) + SCORING.trapElim));
     }
   }
   const coinPts = new Map<string, number>();
@@ -54,7 +55,8 @@ export function scoreRound(roster: string[], competitive: boolean, events: RaceE
     const fin = ft !== undefined;
     const base = fin ? SCORING.finish : 0;
     const first = competitive && fin && ft === earliest ? SCORING.firstFinisher : 0;
-    const sole = competitive && fin && finishTick.size === 1 ? SCORING.soleFinisher : 0;
+    // the sole bonus is only earned once the round is decided: nobody else can still finish
+    const sole = competitive && outcomeKnown && fin && finishTick.size === 1 ? SCORING.soleFinisher : 0;
     const trap = trapPts.get(pid) ?? 0;
     const coins = coinPts.get(pid) ?? 0;
     const total = base + first + sole + trap + coins;

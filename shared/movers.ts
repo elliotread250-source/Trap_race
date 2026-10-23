@@ -104,31 +104,35 @@ function cellsOf(rects: Rect[], grow: number): Set<string> {
   return out;
 }
 
-const sweepCache = new Map<string, { sweep: Cell[]; headroom: Cell[]; bbox: Rect }>();
+const sweepCache = new Map<string, { sweep: Cell[]; bbox: Rect }>();
 function geomKey(o: PlacedObject) { const m = motionOf(o); return `${o.item}:${o.x},${o.y}:${o.rot}:${o.cells.map(c => c.join(',')).join(';')}:${m.period}:${m.travel}:${m.radius}:${m.dir}`; }
 
 /**
- * Cells any child body ever overlaps (the reserved lane), and the headroom band directly above every pose that must stay
- * free of solids so a rider is never squeezed. Uses the actual swept platform shapes, so the wheel's centre stays open.
+ * Cells any child body ever overlaps over a full cycle. Used for the build preview, bomb highlight regions and the
+ * bots' timed-edge planning. It reserves nothing: blocks may be built in a path, and a platform passes through them.
  */
-export function sweepOf(o: PlacedObject): { sweep: Cell[]; headroom: Cell[]; bbox: Rect } {
+export function sweepOf(o: PlacedObject): { sweep: Cell[]; bbox: Rect } {
   const key = geomKey(o);
   const hit = sweepCache.get(key);
   if (hit) return hit;
   const ps = poses(o);
   // between samples a wheel gondola moves at most 2πR/1440 ≈ 0.63 px; grow by that so the lane is conservative
   const sweepSet = cellsOf(ps, motionOf(o).k === 'wheel' ? 0.7 : 0);
-  const riderZones = ps.map(r => ({ x: r.x, y: r.y - MOVERS.riderHeadroomPx, w: r.w, h: MOVERS.riderHeadroomPx }));
-  const headSet = cellsOf(riderZones, 0);
-  for (const k of sweepSet) headSet.delete(k);
-  const parse = (s: Set<string>) => [...s].map(k => k.split(',').map(Number) as Cell).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
-  const sweep = parse(sweepSet), headroom = parse(headSet);
+  const sweep = [...sweepSet].map(k => k.split(',').map(Number) as Cell).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const [x, y] of [...sweep, ...headroom]) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-  const res = { sweep, headroom, bbox: { x: x0 * C, y: y0 * C, w: (x1 - x0 + 1) * C, h: (y1 - y0 + 1) * C } };
+  for (const [x, y] of sweep) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const res = { sweep, bbox: { x: x0 * C, y: y0 * C, w: (x1 - x0 + 1) * C, h: (y1 - y0 + 1) * C } };
   if (sweepCache.size > 4000) sweepCache.clear();
   sweepCache.set(key, res);
   return res;
+}
+
+/** Cells a pixel rect touches (any overlap counts). */
+export function cellsTouched(r: Rect): Cell[] {
+  const out: Cell[] = [];
+  const x0 = Math.floor(r.x / C), x1 = Math.floor((r.x + r.w - 0.01) / C), y0 = Math.floor(r.y / C), y1 = Math.floor((r.y + r.h - 0.01) / C);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.push([x, y]);
+  return out;
 }
 
 /** Does a pixel rect overlap any reference-pose body of the object (bomb targeting)? */

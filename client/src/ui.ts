@@ -1,5 +1,5 @@
 // DOM interface. Names and other player text are always set with textContent, never parsed as HTML.
-import { GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
+import { fmtPts, GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import { MAP_LIST } from '../../shared/maps';
 import { World } from '../../shared/world';
@@ -262,13 +262,13 @@ export class UI {
     const row = (a: string, b: string, c: string) => h('tr', {}, h('td', {}, a), h('td', { class: 'num' }, b), h('td', {}, c));
     return h('div', { class: 'screen' }, h('div', { class: 'card wide', style: 'max-height:92vh;overflow-y:auto' },
       h('h2', {}, 'How to play'),
-      h('p', {}, `Every match has ${MATCH.defaultRounds} rounds on one map. Each round: draft one item (${TIMERS.draftMs / 1000}s), place it on the shared course (${TIMERS.buildMs / 1000}s), then everyone races from START to the flag (${TIMERS.raceMs / 1000}s). Everything that survives stays on the course, so it gets nastier every round.`),
+      h('p', {}, `A match is played on one map and ends the moment somebody reaches the score to win (the host picks ${MATCH.minTarget} to ${MATCH.maxTarget} points). Each round: draft one item (${TIMERS.draftMs / 1000}s), place it on the shared course (${TIMERS.buildMs / 1000}s), then everyone races from START to the flag (${TIMERS.raceMs / 1000}s). Everything that survives stays on the course, so it gets nastier every round.`),
       h('h3', {}, 'Draft'),
-      h('p', {}, 'A shared pool of 5–10 cards, always at least one per player. Each card can be taken by exactly one player. Miss the timer and you get a random leftover card.'),
+      h('p', {}, 'A shared pool of 5–10 cards, always at least one per player. Each card can be taken by exactly one player. Humans pick first: the AI players only choose from what is left after every human has picked. Miss the timer and you get a random leftover card.'),
       h('h3', {}, 'Build'),
-      h('p', {}, 'Everything snaps to the grid. Green means legal, red tells you why not. Items can’t overlap anything, and can’t go in the striped safety zones around START and FINISH. You can’t completely block the course: the server checks that a route to the flag survives using the real jump physics. Bombs remove player-built objects (never map terrain or map wire). Press Rehearse to test the course; it never scores.'),
+      h('p', {}, 'Everything snaps to the grid. Green means legal, red tells you why not. Items can’t overlap anything, and can’t go in the striped safety zones around START and FINISH. Nothing checks that the course stays finishable: you may seal it, and if you do, bombs are how it gets reopened. Bombs remove player-built objects (never map terrain or map wire). Press Rehearse to test the course; it never scores.'),
       h('h3', {}, 'Moving platforms'),
-      h('p', {}, `The Shuttle Block slides ${MOVERS.shuttleTravelCells} cells and back every ${MOVERS.shuttlePeriodTicks / 60}s; the Ferris Wheel carries four level gondolas around a pivot you can pass through, one lap every ${MOVERS.wheelPeriodTicks / 60}s. Both carry you exactly as they move, restart from the same pose at every GO, and reserve their whole path (shaded while building) so nothing can be placed in their way. Jumping off keeps no platform speed. Bombs hit them at their starting pose, which the build view freezes on while you hold a bomb.`),
+      h('p', {}, `The Shuttle Block slides ${MOVERS.shuttleTravelCells} cells and back every ${MOVERS.shuttlePeriodTicks / 60}s, the Moving Platform glides ${HAZARD.movingPathCells} cells end to end, and the Ferris Wheel carries four level gondolas around a pivot you can pass through, one lap every ${MOVERS.wheelPeriodTicks / 60}s. They carry you exactly as they move and restart from the same pose at every GO. Walls and blocks do not stop them: they slide straight through. A platform may start partly inside a wall but never wholly (a wheel needs one gondola in open space). Get squeezed between a moving platform and something solid and you die; if another player owns the platform it counts as their trap kill. Jumping off keeps no platform speed. Bombs hit them at their starting pose, which the build view freezes on while you hold a bomb.`),
       h('h3', {}, 'Big maps'),
       h('p', {}, 'The Great Oak can’t be crossed until someone builds a way over the tree: while there is no full route, every draft guarantees building cards, races are short scouting runs, and you may place anything that doesn’t cut players off from the furthest point they can reach. Under the Mountain is sealed to the sky: the only way on is through the cave.'),
       h('h3', {}, 'Controls'),
@@ -276,17 +276,17 @@ export class UI {
       h('h3', {}, 'Scoring'),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' },
         h('tr', {}, h('th', {}, 'Event'), h('th', {}, 'Points'), h('th', {}, 'When')),
-        row('Finish', `+${SCORING.finish}`, 'Reach the flag alive'),
-        row('First finisher', `+${SCORING.firstFinisher}`, 'Earliest finish tick (ties all get it). Not in solo practice.'),
-        row('Sole finisher', `+${SCORING.soleFinisher}`, 'You are the only finisher in a round with 2+ competitors'),
-        row('Trap elimination', `+${SCORING.trapElim}`, `Someone else dies to a trap you placed. Max +${SCORING.trapCapPerRound} per round. Never for yourself.`),
-        row('Banked coin', `+${SCORING.coin}`, 'Carry a coin to the flag. Picking it up is worth nothing until you finish.'),
+        row('Finish', `+${fmtPts(SCORING.finish)}`, 'Reach the flag alive'),
+        row('First finisher', `+${fmtPts(SCORING.firstFinisher)}`, 'Earliest finish tick (ties all get it). Not in solo practice.'),
+        row('Sole finisher', `+${fmtPts(SCORING.soleFinisher)}`, 'You are the only finisher in a round with 2+ competitors. Awarded once nobody else can still finish.'),
+        row('Trap elimination', `+${fmtPts(SCORING.trapElim)}`, `Someone else dies to a trap you placed, crushes included. Counts ${SCORING.trapCapElimsPerRound} eliminations per round at most. Never for yourself.`),
+        row('Banked coin', `+${fmtPts(SCORING.coin)}`, 'Carry a coin to the flag. Picking it up is worth nothing until you finish.'),
       )),
-      h('p', {}, 'Coins drop where their carrier dies, and anyone can pick them up. Next round every coin returns to where it was placed.'),
+      h('p', {}, 'Coins drop where their carrier dies, and anyone can pick them up. A coin nobody banks returns to where it was placed next round. A coin that reaches the flag is spent and gone for the rest of the match.'),
       h('h3', {}, 'Winning'),
-      h('p', {}, 'Highest score wins. Ties: most successful finishes, then lowest total time across those finishes. Still tied: shared victory.'),
+      h('p', {}, `The first player to reach the score to win takes the match immediately, even mid-race. Players who reach it on the same tick share the victory. If nobody has reached it, the next round starts; there is no round limit.`),
       h('h3', {}, 'Traps worth knowing'),
-      h('p', {}, `Tripod snipers sit on blocks and fire every ${HAZARD.sniperInterval}s exactly; shots pierce players. Crossbow arrows fly straight and break on the first player. Cannonballs arc. Black holes pull you in and the core is lethal. Barbed wire is deadly even while wall sliding. Shields absorb one trap hit (${POWER.shieldDur}s), never a fall.`),
+      h('p', {}, `Tripod snipers sit on blocks and fire every ${HAZARD.sniperInterval}s exactly; the shot lands instantly and pierces players. The crossbow fires every ${HAZARD.crossbowInterval}s, slow arrows that break on the first player. Cannonballs arc. Black holes pull players and projectiles in; come at one with sideways speed and you can swing around it, aim straight at it and the core kills. Crumbling platforms break on their second hit (a landing, a wall-slide or a shot) and stay gone for the round. Barbed wire is deadly even while wall sliding. Shields absorb one trap hit (${POWER.shieldDur}s), never a fall.`),
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn primary', onclick: () => this.go(this.g.transport ? 'game' : 'menu') }, 'Got it')),
     ));
   }
@@ -400,7 +400,7 @@ export class UI {
       h('h3', {}, host ? 'Choose a map' : `Map: ${MAP_LIST.find(m => m.id === room.mapId)?.name}`),
       this.mapPicker(room.mapId, id => g.send({ t: 'host', a: 'map', mapId: id }), !host),
       h('div', { class: 'row', style: 'margin-top:12px' },
-        h('label', { class: 'field' }, 'Rounds', h('select', { class: 'input', disabled: !host, onchange: (e: Event) => g.send({ t: 'host', a: 'rounds', rounds: Number((e.target as HTMLSelectElement).value) }) }, ...[3, 4, 5, 6, 8, 10, 12].map(n => h('option', { value: n, selected: n === room.rounds }, String(n))))),
+        h('label', { class: 'field' }, 'Score to win', h('select', { class: 'input', disabled: !host, 'aria-label': 'Score to win', onchange: (e: Event) => g.send({ t: 'host', a: 'target', target: Number((e.target as HTMLSelectElement).value) }) }, ...Array.from({ length: MATCH.maxTarget - MATCH.minTarget + 1 }, (_, i) => MATCH.minTarget + i).map(n => h('option', { value: n, selected: n === room.target }, String(n))))),
         h('div', { class: 'grow' }),
         h('button', { class: 'btn', onclick: () => this.leave() }, 'Leave'),
         !host && h('button', { class: `btn ${g.me?.ready ? '' : 'primary'}`, onclick: () => g.send({ t: 'ready', ready: !g.me?.ready }) }, g.me?.ready ? 'Not ready' : 'Ready up'),
@@ -431,8 +431,9 @@ export class UI {
       return btn;
     });
     return h('div', { class: 'draft' },
-      h('h2', {}, `Round ${g.round}/${g.rounds} · Draft`),
-      h('div', { class: 'sub' }, spectator ? 'Spectating this match.' : mine ? `You picked ${getItem(mine.item).name}. Waiting for the others…` : 'Pick one item. Each card can be claimed by exactly one player.', g.demolition ? ' A bomb is guaranteed this round: the course looked blocked.' : '', g.courseOpen ? '' : ' No full route to the flag yet: everyone gets a building card to choose. Build the crossing!'),
+      h('h2', {}, `Round ${g.round} · Draft · first to ${g.target}`),
+      g.cards.length > 0 && g.room?.members.some(m => m.bot && !m.spectator) && h('div', { class: `stage ${g.draftStage}`, 'data-stage': g.draftStage }, g.draftStage === 'humans' ? 'Players choosing' : 'AI choosing'),
+      h('div', { class: 'sub' }, spectator ? 'Spectating this match.' : mine ? `You picked ${getItem(mine.item).name}. ${g.draftStage === 'humans' ? 'Waiting for the other players…' : 'The AI is choosing from what is left…'}` : 'Pick one item. Each card can be claimed by exactly one player.', g.demolition ? ' A bomb is guaranteed this round: the course looked blocked.' : '', g.courseOpen ? '' : ' No full route to the flag yet: everyone gets a building card to choose. Build the crossing!'),
       h('div', { class: 'cards' }, ...cards),
     );
   }
@@ -445,7 +446,7 @@ export class UI {
     if (g.rehearsal) return h('div', { class: 'buildbar' }, h('div', { class: 'info' }, h('b', {}, 'Rehearsal (not scored)'), h('span', {}, 'Test the current course. The build timer keeps running.')), h('button', { class: 'btn primary', onclick: () => g.stopRehearsal() }, 'Back to building (Esc)'));
     if (g.placedThisRound) return h('div', { class: 'buildbar' }, h('div', { class: 'info' }, h('b', {}, `${def.name} placed`), h('span', {}, 'Waiting for everyone else to place.')), h('button', { class: 'btn', onclick: () => g.startRehearsal() }, 'Rehearse'));
     const chk = g.check;
-    const status = g.awaitingPlace ? h('span', { class: 'valid ok' }, 'Checking route…') : chk?.ok ? h('span', { class: 'valid ok' }, def.kind === 'bomb' ? `Removes ${(chk.targets?.length ?? 0) + (chk.dependents?.length ?? 0)} item(s)` : def.kind === 'wire' ? `Valid · ${chk.wireLen} segment${chk.wireLen === 1 ? '' : 's'}${chk.trimmed ? ` (${chk.trimmed} trimmed)` : ''}` : 'Valid spot') : h('span', { class: 'valid bad' }, chk?.reason ?? 'Move the cursor onto the course');
+    const status = g.awaitingPlace ? h('span', { class: 'valid ok' }, 'Placing…') : chk?.ok ? h('span', { class: 'valid ok' }, def.kind === 'bomb' ? `Removes ${(chk.targets?.length ?? 0) + (chk.dependents?.length ?? 0)} item(s)` : def.kind === 'wire' ? `Valid · ${chk.wireLen} segment${chk.wireLen === 1 ? '' : 's'}${chk.trimmed ? ` (${chk.trimmed} trimmed)` : ''}` : 'Valid spot') : h('span', { class: 'valid bad' }, chk?.reason ?? 'Move the cursor onto the course');
     const kb = (a: keyof typeof settings.binds) => h('kbd', {}, keyLabel(settings.binds[a][0]));
     return h('div', { class: 'buildbar' },
       h('div', { class: 'info' }, h('b', {}, def.name + (def.variants ? ` · ${def.variants[g.variant]}` : '')), h('span', {}, buildTip(def.kind, def.rotationNote))),
@@ -472,23 +473,23 @@ export class UI {
       const tr = h('tr', { class: row.pid === g.you ? 'me' : '' },
         h('td', { style: `color:${PLAYER_COLORS[(m?.color ?? 0) % PLAYER_COLORS.length]}` }, m?.name ?? row.pid),
         h('td', {}, status),
-        h('td', { class: 'num' }, String(row.base)),
-        h('td', { class: 'num' }, solo ? '–' : String(row.first)),
-        h('td', { class: 'num' }, solo ? '–' : String(row.sole)),
-        h('td', { class: 'num' }, solo ? '–' : String(row.trap)),
-        h('td', { class: 'num' }, String(row.coins)),
-        h('td', { class: 'num total' }, `+${row.total}`),
-        h('td', { class: 'num total' }, String(row.matchTotal)),
+        h('td', { class: 'num' }, fmtPts(row.base)),
+        h('td', { class: 'num' }, solo ? '–' : fmtPts(row.first)),
+        h('td', { class: 'num' }, solo ? '–' : fmtPts(row.sole)),
+        h('td', { class: 'num' }, solo ? '–' : fmtPts(row.trap)),
+        h('td', { class: 'num' }, fmtPts(row.coins)),
+        h('td', { class: 'num total' }, `+${fmtPts(row.total)}`),
+        h('td', { class: 'num total' }, fmtPts(row.matchTotal)),
       );
       return tr;
     });
     return h('div', { class: 'screen' }, h('div', { class: 'card wide' },
-      h('h2', {}, `Round ${g.round}/${g.rounds} results`),
+      h('h2', {}, `Round ${g.round} results · first to ${g.target}`),
       solo && h('p', {}, 'Solo practice: first, sole-finisher and trap bonuses are disabled.'),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' },
         h('tr', {}, ...['Player', 'Result', 'Finish', 'First', 'Sole', 'Traps', 'Coins', 'Round', 'Match'].map(t => h('th', {}, t))),
         ...body)),
-      h('p', { class: 'small-note', 'data-next': '1' }, r.last ? 'Final standings next…' : 'Next round soon. Built items stay on the course.'),
+      h('p', { class: 'small-note', 'data-next': '1' }, `Next round soon. Built items stay on the course. First to ${g.target} wins.`),
     ));
   }
 
@@ -499,13 +500,14 @@ export class UI {
     const names = me.winners.map(id => g.member(id)?.name ?? id);
     const rows = me.order.map((id, i) => {
       const m = g.member(id); const t = me.tally[id];
-      return h('tr', { class: id === g.you ? 'me' : '' }, h('td', {}, `${i + 1}.`), h('td', { style: `color:${PLAYER_COLORS[(m?.color ?? 0) % PLAYER_COLORS.length]}` }, m?.name ?? id), h('td', { class: 'num total' }, String(t?.score ?? 0)), h('td', { class: 'num' }, String(t?.finishes ?? 0)), h('td', { class: 'num' }, t?.finishes ? `${t.finishTime.toFixed(2)}s` : '–'));
+      return h('tr', { class: id === g.you ? 'me' : '' }, h('td', {}, `${i + 1}.`), h('td', { style: `color:${PLAYER_COLORS[(m?.color ?? 0) % PLAYER_COLORS.length]}` }, m?.name ?? id), h('td', { class: 'num total' }, fmtPts(t?.score ?? 0)), h('td', { class: 'num' }, String(t?.finishes ?? 0)), h('td', { class: 'num' }, t?.finishes ? `${t.finishTime.toFixed(2)}s` : '–'));
     });
     const host = g.isHost;
     const voted = g.votes.includes(g.you);
     return h('div', { class: 'screen' }, h('div', { class: 'card wide' },
-      h('h2', {}, 'Match over'),
-      h('div', { class: 'winner' }, names.length > 1 ? `Shared victory: ${names.join(' & ')}` : `${names[0] ?? 'Nobody'} wins!`),
+      h('h2', {}, `Match over · first to ${me.target}`),
+      h('div', { class: 'winner' }, names.length > 1 ? `Shared victory: ${names.join(' & ')}` : `${names[0] ?? 'Nobody'} wins!`,
+        h('span', { class: 'small-note' }, ` ${fmtPts(me.tally[me.winners[0]]?.score ?? 0)} points after round ${me.round} (target ${me.target})`)),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' }, h('tr', {}, ...['#', 'Player', 'Score', 'Finishes', 'Total time'].map(t => h('th', {}, t))), ...rows)),
       host && h('h3', {}, 'Next map'),
       host && this.mapPicker(room.mapId, id => g.send({ t: 'host', a: 'map', mapId: id })),
@@ -559,13 +561,13 @@ export class UI {
     const e = this.hudEls!;
     const left = g.timeLeft / 1000;
     const phaseName = { draft: 'Draft', build: 'Build', countdown: 'Get ready', race: 'Race', results: 'Results', matchEnd: 'Match over', lobby: '' }[g.phase];
-    e.round.textContent = `Round ${g.round}/${g.rounds} · ${phaseName}`;
+    e.round.textContent = `Round ${g.round} · ${phaseName} · first to ${g.target}`;
     const showTimer = g.phase !== 'matchEnd';
     e.timer.textContent = showTimer ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : '';
     e.timer.classList.toggle('low', left < 10 && g.phase !== 'results');
     e.timer.classList.toggle('hidden', !showTimer);
     const myScore = g.tally[g.you]?.score ?? 0;
-    e.score.textContent = g.isPractice ? `Finishes ${g.tally[g.you]?.finishes ?? 0}` : `Score ${myScore}`;
+    e.score.textContent = g.isPractice ? `Finishes ${g.tally[g.you]?.finishes ?? 0} · Score ${fmtPts(myScore)}` : `Score ${fmtPts(myScore)}`;
     // standings
     const room = g.room!;
     const sim = g.race;
@@ -576,7 +578,7 @@ export class UI {
       e.standings.replaceChildren(...order.map(m => {
         const st = sim?.player(m.id)?.status;
         const icon = st === 'finished' ? 'FIN' : st === 'dead' ? 'OUT' : st === 'timeout' ? 'TIME' : st === 'racing' ? '▶' : '';
-        return h('div', { class: `standing ${m.id === g.you ? 'me' : ''}`, style: `--c:${PLAYER_COLORS[m.color % PLAYER_COLORS.length]}` }, h('span', { class: 'nm' }, m.name), h('span', { class: 'st' }, (m.connected ? '' : 'OFFLINE ') + icon), h('b', {}, String(g.tally[m.id]?.score ?? 0)));
+        return h('div', { class: `standing ${m.id === g.you ? 'me' : ''}`, style: `--c:${PLAYER_COLORS[m.color % PLAYER_COLORS.length]}` }, h('span', { class: 'nm' }, m.name), h('span', { class: 'st' }, (m.connected ? '' : 'OFFLINE ') + icon), h('b', {}, fmtPts(g.tally[m.id]?.score ?? 0)));
       }));
     }
     // effects, coins, connection

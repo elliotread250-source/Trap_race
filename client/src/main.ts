@@ -1,5 +1,5 @@
 import './style.css';
-import { CELL } from '../../shared/config';
+import { CELL, fmtPts, SCORING } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import type { RaceEvent } from '../../shared/race';
 import { sfx, startMusic, unlockAudio } from './audio';
@@ -51,8 +51,8 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
       const d = e as Extract<RaceEvent, { type: 'death' }>;
       sfx.death();
       renderer.burst(d.x, d.y, 26, colorOf(d.pid), 260, 500, 4);
-      if (d.pid === game.you) game.toast(d.credit ? `Eliminated by ${game.member(d.credit)?.name ?? 'a trap'}'s trap` : d.cause === 'fall' ? 'You fell!' : 'Eliminated', 'bad');
-      else if (d.credit === game.you) game.toast(`Your trap got ${game.member(d.pid)?.name}! +1`, 'good');
+      if (d.pid === game.you) game.toast(d.cause === 'crush' ? (d.credit ? `Crushed by ${game.member(d.credit)?.name ?? 'a'}'s platform` : 'Crushed!') : d.credit ? `Eliminated by ${game.member(d.credit)?.name ?? 'a trap'}'s trap` : d.cause === 'fall' ? 'You fell!' : 'Eliminated', 'bad');
+      else if (d.credit === game.you) game.toast(`Your ${d.cause === 'crush' ? 'platform crushed' : 'trap got'} ${game.member(d.pid)?.name}! +${fmtPts(SCORING.trapElim)}`, 'good');
       break;
     }
     case 'finish': {
@@ -63,7 +63,7 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
       if (f.pid === game.you) game.toast(`Finished in ${(f.tick / 60).toFixed(2)}s!`, 'good');
       break;
     }
-    case 'bank': if ((e as { pid: string }).pid === game.you) { sfx.bank(); game.toast('Coin banked! +1', 'good'); } break;
+    case 'bank': if ((e as { pid: string }).pid === game.you) { sfx.bank(); game.toast(`Coin banked! +${fmtPts(SCORING.coin)}`, 'good'); } break;
     case 'coin': {
       const c = e as Extract<RaceEvent, { type: 'coin' }>;
       if (c.action === 'pickup') { sfx.coin(); if (c.pid === game.you) game.toast('Coin picked up: carry it to the flag', 'info', 2200); }
@@ -80,6 +80,14 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
         if (kind === 'sniper') sfx.sniper(); else sfx.fire();
         renderer.burst(o.x * CELL + CELL / 2, o.y * CELL + CELL / 2, 5, '#fff3c0', 90, 0, 3);
       }
+      break;
+    }
+    case 'shot': renderer.addTracer((e as Extract<RaceEvent, { type: 'shot' }>).pts); break;
+    case 'absorb': { const a = e as Extract<RaceEvent, { type: 'absorb' }>; renderer.burst(a.x, a.y, 8, '#ff3bd0', 90, 0, 2.5); break; }
+    case 'crumble': {
+      const c = e as Extract<RaceEvent, { type: 'crumble' }>;
+      const o = game.world?.objects.get(c.obj);
+      if (o) for (const [x, y] of o.cells) renderer.burst(x * CELL + CELL / 2, y * CELL + CELL / 2, c.hp === 0 ? 10 : 4, '#b59a7a', 120, 500, c.hp === 0 ? 4 : 3);
       break;
     }
     default: break;

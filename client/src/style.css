@@ -229,3 +229,7 @@ table.results td.total { color: var(--accent); font-size: 16px; }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } .btn { transition: none; } }
 
 .map-tile .badge { display: block; font-size: 11px; font-weight: 600; color: #ffd25e; opacity: .9; margin-top: 2px; }
+
+/* draft stage banner: humans choose first, then the AI */
+.draft .stage { display: inline-block; margin: 2px 0 8px; padding: 4px 12px; border-radius: 999px; font-weight: 800; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; background: rgba(127, 240, 224, .14); color: #7ff0e0; border: 1px solid rgba(127, 240, 224, .4); }
+.draft .stage.ai { background: rgba(255, 190, 70, .14); color: #ffbe46; border-color: rgba(255, 190, 70, .45); }
