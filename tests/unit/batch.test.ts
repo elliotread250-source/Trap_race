@@ -243,9 +243,13 @@ describe('phase 3: scoring, rules and game settings', () => {
     expect(room.target).toBe(0);
     room.handle(h.id, { t: 'host', a: 'rounds', rounds: 0 }); // would leave both off
     expect(room.roundLimit).toBe(8);
-    room.handle(h.id, { t: 'host', a: 'rounds', rounds: 2 });
-    expect(room.roundLimit).toBe(8);
-    expect(errs.length).toBe(3);
+    room.handle(h.id, { t: 'host', a: 'rounds', rounds: 99 }); // any two-digit number
+    expect(room.roundLimit).toBe(99);
+    room.handle(h.id, { t: 'host', a: 'rounds', rounds: 37 });
+    expect(room.roundLimit).toBe(37);
+    for (const bad of [100, -1, 7.5]) room.handle(h.id, { t: 'host', a: 'rounds', rounds: bad });
+    expect(room.roundLimit).toBe(37);
+    expect(errs.length).toBe(5);
   });
 
   it('ends after the round limit with the most points winning; ties break on finishes, then shared', () => {

@@ -45,9 +45,17 @@ try {
   await guest.page.click('button:has-text("Join")');
   await guest.page.waitForSelector('.player-row >> nth=1', { timeout: 10000 });
   await guest.page.click('text=Ready up');
-  await host.page.selectOption('select[aria-label="Round limit"]', '3');
+  // the round limit is a typed field: switch it on, then type any two-digit number
+  await host.page.check('input[aria-label="Round limit on"]');
+  await host.page.waitForTimeout(400);
+  await host.page.fill('input[aria-label="Round limit"]', '47');
+  await host.page.press('input[aria-label="Round limit"]', 'Enter');
   await guest.page.waitForTimeout(500);
-  check('host sets a round limit and the guest sees it', await guest.page.evaluate(() => window.__trap.game.room.roundLimit) === 3);
+  check('host types a two-digit round limit (47) and the guest sees it', await guest.page.evaluate(() => window.__trap.game.room.roundLimit) === 47);
+  await host.page.fill('input[aria-label="Round limit"]', '3');
+  await host.page.press('input[aria-label="Round limit"]', 'Enter');
+  await guest.page.waitForTimeout(500);
+  check('a one-digit round limit works too', await guest.page.evaluate(() => window.__trap.game.room.roundLimit) === 3);
   for (const p of [host, guest]) await p.page.evaluate(() => { const g = window.__trap.game, prev = g.onEvent; g.onEvent = e => { if (e.type === 'death') window.__deaths.push([e.pid, e.cause, e.t]); prev(e); }; });
   await host.page.click('text=Start match');
   await Promise.all([waitPhase(host, 'draft'), waitPhase(guest, 'draft')]);

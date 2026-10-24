@@ -482,9 +482,7 @@ export class UI {
           // "Off" is only offered while the round limit is on: one of the two must always stay active
           h('option', { value: 0, selected: room.target === 0, disabled: room.roundLimit === 0 }, room.roundLimit === 0 ? 'Off (turn on a round limit first)' : 'Off'),
           ...Array.from({ length: MATCH.maxTarget - MATCH.minTarget + 1 }, (_, i) => MATCH.minTarget + i).map(n => h('option', { value: n, selected: n === room.target }, String(n))))),
-        h('label', { class: 'field' }, 'Round limit', h('select', { class: 'input', disabled: !host, 'aria-label': 'Round limit', onchange: (e: Event) => g.send({ t: 'host', a: 'rounds', rounds: Number((e.target as HTMLSelectElement).value) }) },
-          h('option', { value: 0, selected: room.roundLimit === 0, disabled: room.target === 0 }, room.target === 0 ? 'Off (turn on points to win first)' : 'Off'),
-          ...Array.from({ length: MATCH.maxRounds - MATCH.minRounds + 1 }, (_, i) => MATCH.minRounds + i).map(n => h('option', { value: n, selected: n === room.roundLimit }, `${n} rounds`)))),
+        this.roundsField(),
         h('div', { class: 'grow' }),
         h('button', { class: 'btn', onclick: () => this.leave() }, 'Leave'),
         !host && h('button', { class: `btn ${g.me?.ready ? '' : 'primary'}`, onclick: () => g.send({ t: 'ready', ready: !g.me?.ready }) }, g.me?.ready ? 'Not ready' : 'Ready up'),
@@ -492,6 +490,29 @@ export class UI {
       ),
       h('p', { class: 'small-note' }, practice ? 'Solo practice: no competitive bonuses.' : '2–6 competitors (bots count). New players can join between matches; anyone joining mid-match spectates until the next one.'),
     ));
+  }
+
+  /** Round limit: type any number of rounds up to two digits (1-99), or switch it off (never together with points to win). */
+  private roundsField(): Child {
+    const g = this.g, room = g.room!, host = g.isHost;
+    const on = room.roundLimit > 0;
+    const inp = h('input', { class: 'input rounds-input', type: 'text', inputmode: 'numeric', maxlength: 2, 'aria-label': 'Round limit', value: String(on ? room.roundLimit : MATCH.defaultRounds), disabled: !host || !on, style: 'width:72px' }) as HTMLInputElement;
+    const send = () => {
+      const v = inp.value.trim();
+      // up to two digits, 1-99; anything else is refused here and by the server
+      if (!/^\d{1,2}$/.test(v) || Number(v) < MATCH.minRounds || Number(v) > MATCH.maxRounds) { g.toast(`Round limit must be a number from ${MATCH.minRounds} to ${MATCH.maxRounds}`, 'bad'); inp.value = String(on ? room.roundLimit : MATCH.defaultRounds); return; }
+      if (Number(v) !== room.roundLimit) g.send({ t: 'host', a: 'rounds', rounds: Number(v) });
+    };
+    inp.addEventListener('input', () => { inp.value = inp.value.replace(/\D/g, '').slice(0, 2); });
+    inp.addEventListener('change', send);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { send(); inp.blur(); } });
+    // the toggle can't switch the round limit off while points to win is off: one of them always stays active
+    const toggle = h('input', { type: 'checkbox', checked: on, disabled: !host || (on && room.target === 0), 'aria-label': 'Round limit on', title: on && room.target === 0 ? 'Turn on points to win first' : '', onchange: (e: Event) => {
+      const want = (e.target as HTMLInputElement).checked;
+      const n = Number(inp.value);
+      g.send({ t: 'host', a: 'rounds', rounds: want ? (n >= MATCH.minRounds && n <= MATCH.maxRounds ? n : MATCH.defaultRounds) : 0 });
+    } }) as HTMLInputElement;
+    return h('label', { class: 'field' }, 'Round limit', h('div', { class: 'row', style: 'gap:8px;align-items:center;margin:0' }, toggle, inp, h('span', { class: 'small-note' }, on ? 'rounds' : room.target === 0 ? 'off' : 'off')));
   }
 
   private draft(): Child {

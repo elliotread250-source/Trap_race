@@ -67,8 +67,8 @@ export const MATCH = {
   maxTarget: 15,
   /** optional round limit (0 = off). Points to win and the round limit can each be off, never both. */
   defaultRounds: 10,
-  minRounds: 3,
-  maxRounds: 30,
+  minRounds: 1,
+  maxRounds: 99, // any number up to two digits
   minPlayers: 2,
   maxPlayers: 6,
   maxPlacedObjects: 120, // score-target matches have no round limit; the cap only stops runaway growth and never deletes to make room
