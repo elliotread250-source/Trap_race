@@ -73,6 +73,26 @@ export const sfx = {
   click: () => tone(700, 0.04, 'square', 0.1),
   deny: () => tone(180, 0.15, 'square', 0.18, -40),
   spring: () => tone(300, 0.2, 'triangle', 0.25, 600),
+  /** a distinct sound per cause of death (falls back to the generic one) */
+  deathBy: (cause: string) => {
+    switch (cause) {
+      case 'crush': noise(0.18, 0.35, 120); tone(90, 0.2, 'square', 0.25, -40); break;
+      case 'sniper': case 'arrow': noise(0.06, 0.3, 2500); tone(500, 0.18, 'sawtooth', 0.15, -380); break;
+      case 'dart': tone(1400, 0.05, 'square', 0.12); tone(320, 0.3, 'triangle', 0.18, -180, 0.04); break;
+      case 'cannon': noise(0.6, 0.45, 60); tone(70, 0.5, 'sawtooth', 0.3, -40); break;
+      case 'rspikes': tone(900, 0.06, 'square', 0.2); noise(0.12, 0.25, 900); break;
+      case 'wire': for (let i = 0; i < 4; i++) tone(1800 + i * 300, 0.04, 'square', 0.08, -600, i * 0.03); noise(0.15, 0.15, 3000); break;
+      case 'oval': tone(700, 0.08, 'triangle', 0.25, 600); noise(0.1, 0.25, 1500); break;
+      case 'fall': case 'pull-fall': tone(600, 0.9, 'sine', 0.22, -540); break;
+      case 'drown': for (let i = 0; i < 5; i++) tone(300 + i * 90, 0.08, 'sine', 0.15, 200, i * 0.09); break;
+      case 'tsunami': noise(0.9, 0.35, 200); tone(140, 0.8, 'sine', 0.2, -60); break;
+      case 'ghost': tone(500, 0.7, 'sine', 0.2, -300); tone(760, 0.7, 'sine', 0.12, -420, 0.1); break;
+      case 'lava': case 'geyser': noise(0.5, 0.3, 400); tone(200, 0.4, 'sawtooth', 0.15, -120); break;
+      default: tone(300, 0.35, 'sawtooth', 0.22, -240); noise(0.25, 0.2, 400);
+    }
+  },
+  siren: () => { for (let i = 0; i < 3; i++) { tone(620, 0.22, 'square', 0.18, 300, i * 0.5); tone(920, 0.22, 'square', 0.18, -300, i * 0.5 + 0.25); } },
+  crumple: () => noise(0.12, 0.18, 1800),
 };
 
 // four-bar loop: bass + arpeggio, deliberately light so effects stay readable

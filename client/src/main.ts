@@ -49,8 +49,16 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
     case 'results': sfx.results(); break;
     case 'death': {
       const d = e as Extract<RaceEvent, { type: 'death' }>;
-      sfx.death();
-      renderer.burst(d.x, d.y, 26, colorOf(d.pid), 260, 500, 4);
+      sfx.deathBy(d.cause);
+      // which way the blow came from (launchers, blades), where the void or water is, which hole pulled them in
+      const src = d.src ? game.world?.objects.get(d.src) : undefined;
+      let dx = 0, dy = 0, rx: number | undefined, ry: number | undefined;
+      const by = d.y, mh = (game.world?.h ?? 0) * CELL;
+      if (src) { const sx = src.x * CELL + CELL / 2, sy = src.y * CELL + CELL / 2, l = Math.hypot(d.x - sx, by - sy) || 1; dx = (d.x - sx) / l; dy = (by - sy) / l; if (d.cause === 'blackhole' || d.cause === 'ghost') { rx = sx; ry = sy; } }
+      const ex = (e as { fx?: { dx?: number; dy?: number; ry?: number } }).fx;
+      if (ex) { dx = ex.dx ?? dx; dy = ex.dy ?? dy; ry = ex.ry ?? ry; }
+      if (d.cause === 'fall' || d.cause === 'pull-fall') ry = mh - 30;
+      renderer.addDeath({ cause: d.cause, x: d.x, y: Math.min(by, mh - 20), color: colorOf(d.pid), skin: game.member(d.pid)?.skin ?? 0, dx, dy, rx, ry });
       if (d.pid === game.you) game.toast(d.cause === 'crush' ? (d.credit ? `Crushed by ${game.member(d.credit)?.name ?? 'a'}'s platform` : 'Crushed!') : d.credit ? `Eliminated by ${game.member(d.credit)?.name ?? 'a trap'}'s trap` : d.cause === 'fall' ? 'You fell!' : 'Eliminated', 'bad');
       else if (d.credit === game.you) game.toast(`Your ${d.cause === 'crush' ? 'platform crushed' : 'trap got'} ${game.member(d.pid)?.name}! +${fmtPts(SCORING.trapElim)}`, 'good');
       break;
@@ -88,7 +96,10 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
     case 'crumble': {
       const c = e as Extract<RaceEvent, { type: 'crumble' }>;
       const o = game.world?.objects.get(c.obj);
-      if (o) for (const [x, y] of o.cells) renderer.burst(x * CELL + CELL / 2, y * CELL + CELL / 2, c.hp === 0 ? 10 : 4, '#b59a7a', 120, 500, c.hp === 0 ? 4 : 3);
+      if (o) {
+        if (c.hp === 0) renderer.addDebris(o.cells, '#a58868'); // the whole platform falls away
+        for (const [x, y] of o.cells) renderer.burst(x * CELL + CELL / 2, y * CELL + CELL / 2, c.hp === 0 ? 10 : 4, '#b59a7a', 120, 500, c.hp === 0 ? 4 : 3);
+      }
       break;
     }
     default: break;

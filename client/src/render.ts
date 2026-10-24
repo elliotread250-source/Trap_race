@@ -17,6 +17,7 @@ import { drawBlackHole, drawCharacter, drawCoinShape, drawGondola, drawItem, dra
 import { drawAmbient, drawSceneryBackground, hasScenery, paintSceneryTerrain, type ViewInfo } from './scenery';
 import { childCount, childRect, isKinematic, newMotion, pivotPx, referenceRects, shuttleDir, sweepOf, wheelAngle } from '../../shared/movers';
 import type { GameClient } from './game';
+import { drawDeathFx, type DeathFx } from './deathfx';
 import { settings } from './store';
 
 const C = CELL;
@@ -94,6 +95,19 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** death effects in progress (see deathfx.ts) */
+  private deaths: DeathFx[] = [];
+  addDeath(f: Omit<DeathFx, 't0' | 'seed'>) {
+    this.deaths.push({ ...f, t0: performance.now() / 1000, seed: Math.random() * 1000 });
+    if (this.deaths.length > 16) this.deaths.shift();
+  }
+  /** a broken crumbling platform: chunks of the whole thing tumble away */
+  addDebris(cells: [number, number][], color: string) {
+    for (const [x, y] of cells) for (let i = 0; i < 4; i++) {
+      this.particles.push({ x: x * C + 8 + Math.random() * 32, y: y * C + 8 + Math.random() * 32, vx: (Math.random() - 0.5) * 120, vy: -60 - Math.random() * 80, life: 0, max: 0.9 + Math.random() * 0.4, color, size: 8 + Math.random() * 8, grav: 900 });
+    }
+  }
+
   burst(x: number, y: number, n: number, color: string, speed = 160, grav = 600, size = 3) {
     const count = Math.round(n * this.particleBudget());
     for (let i = 0; i < count; i++) {
@@ -124,6 +138,7 @@ export class Renderer {
     this.drawObjects(world, sim, g);
     if (g.phase === 'build' && !g.rehearsal) this.drawBuildOverlay(g, world);
     if (sim) this.drawRace(g, sim);
+    if (this.deaths.length) { const now = performance.now() / 1000; this.deaths = this.deaths.filter(f => drawDeathFx(this.ctx, f, now, settings.reducedMotion)); }
     this.drawParticles(dt);
     if (settings.devOverlay) this.drawDev(g, world, sim);
     ctx.restore();
