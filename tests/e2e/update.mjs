@@ -24,8 +24,9 @@ try {
   await page.click('text=Play Against AI');
   await page.click('text=Create match');
   await page.waitForSelector('text=Start match');
-  const opts = await page.$$eval('select[aria-label="Score to win"] option', os => os.map(o => Number(o.value)));
-  check('lobby offers every score to win from 5 to 15', JSON.stringify(opts) === JSON.stringify([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), JSON.stringify(opts));
+  // every whole score 5..15, plus Off (0), which stays disabled until a round limit is set
+  const opts = await page.$$eval('select[aria-label="Points to win"] option', os => os.map(o => [Number(o.value), o.disabled]));
+  check('lobby offers every score to win from 5 to 15 (and a disabled Off)', JSON.stringify(opts.map(o => o[0])) === JSON.stringify([0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) && opts[0][1] === true, JSON.stringify(opts));
   // a forged out-of-range value is refused by the server
   await page.evaluate(() => window.__trap.game.send({ t: 'host', a: 'target', target: 99 }));
   await page.waitForTimeout(400);

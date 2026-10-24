@@ -31,7 +31,8 @@ Useful tools: `npx tsx scripts/map-ascii.ts rooftop` prints a map with its reach
 | Build: aim / place / rotate | Mouse (or arrow keys) / click, Enter or E / right-click, R or Q (Shift+R reverses) |
 | Build: flip sniper facing, zoom | F, Z or mouse wheel |
 | Spectate next player | Tab |
-| Practice: instant retry | T |
+| Practice / sandbox: instant retry / respawn | T |
+| Sandbox: item menu | M |
 | Emote wheel | Hold G, scroll the mouse wheel to choose, release to play |
 | Menu | Esc (pauses only in solo practice) |
 
@@ -39,7 +40,7 @@ Every binding can be changed in Settings. On phones and tablets: hold ◀/▶ to
 
 ## Match rules
 
-The host picks a **score to win** from 5 to 15 (default 10); the server validates it and locks it for the match. The first player to reach or pass it wins at once, even mid-race, and players who cross it on the same tick share the win. There is no round limit. Phases are server-owned: lobby → draft (humans 20 s, then the AI up to 3.5 s) → build (35 s) → countdown (3 s) → race (90 s; 120 s on the two large maps) → results → next round, until someone reaches the target. Draft and build end early when everyone is done.
+The host picks a **score to win** from 5 to 15 (default 10) and an optional **round limit** (3 to 30). Either can be switched off, never both: the lobby disables the last remaining Off and the server refuses it. The first player to reach or pass the score wins at once, even mid-race, and players who cross it on the same tick share the win. When the round limit is reached the most points wins, then most finishes, then lowest total time, else a shared win. **Individual win requirements** (a lobby checkbox) give any player or bot their own points to win as a handicap; at a round limit players are then ranked by the share of their own requirement they earned. Phases are server-owned: lobby → draft (humans 20 s, then the AI up to 3.5 s) → build (35 s) → countdown (3 s) → race (90 s; 120 s on the two large maps) → results → next round, until someone reaches the target. Draft and build end early when everyone is done.
 
 **Draft.** One shared pool of 5–10 individual cards per round, always at least one per participant, balanced across construction, hazards, utilities and demolition. Humans choose first: the server refuses bot claims until every human has picked, timed out or disconnected (those get the usual seeded random card first), then the AI picks from what is left. The first valid claim on a card wins it atomically; everyone gets exactly one item. After a round where nobody finished (or if the route check finds the course shut), the next pool is guaranteed a bomb. Bombs also turn up every few rounds.
 
@@ -52,10 +53,11 @@ The host picks a **score to win** from 5 to 15 (default 10); the server validate
 | Event | Points | Rule |
 | --- | ---: | --- |
 | Finish | +1 | Reach the flag alive, once per round |
-| First finisher | +0.4 | Earliest finish tick, in a round that started with 2+ competitors |
-| Sole finisher | +0.6 | Exactly one finisher in a round that started with 2+ competitors, paid once nobody else can still finish |
+| First finisher | +0.4 | Earliest finish tick, in a round that started with 2+ competitors. Not paid to a sole finisher |
+| Sole finisher | +0.6 | Exactly one finisher in a round that started with 2+ competitors, paid once nobody else can still finish. Replaces the first-finisher bonus (they never stack) |
 | Trap elimination | +0.2 | Another player dies to a trap you own (crushes by your moving platforms included); once per victim, at most 3 eliminations per round |
 | Banked coin | +1 per coin | Carry the coin to the flag alive; picking it up is worth nothing |
+| Comeback | +1 | Reach the flag after missing it 4 or more rounds in a row (competitive rounds); the streak resets on a finish |
 
 Bots count as competitors. Solo practice (one human, no bots) shows finishes, times and coins but no first, sole or trap bonuses. Self-eliminations, falls and map wire credit nobody. A fall within 3 s of a black hole pull credits that hole's owner. Scores are integer tenths internally (0.2 = 2) so totals never show float artefacts. Scoring is computed on the server from the round's unique event IDs, so duplicate events can't double count; after every tick with a scoring event the target is checked. Competitiveness comes from the roster at round start.
 
@@ -144,3 +146,21 @@ Latency: the client pings the game server once a second over the gameplay socket
 ## Emotes and animations
 
 Ten emotes: wave, dance, spin, flex, laugh, cry, point, heart, thumbs up and floss. Hold G (rebindable) during countdown, race and results to open the emote wheel, scroll the mouse wheel (or point at a slice) to choose, and let go to play it. On touch, tap the Emote button and then a slice. They're cosmetic. The server relays them to the room with a 0.9 s cooldown and rejects anything that isn't a known emote. An emote ends after 2.6 s or the moment you move. Characters also blink, glance around, tap a foot after standing still a while, and crouch ready during the countdown. They skid when braking out of a turn and flail when falling. Finishers dance on the flag, and the match-over screen shows the winners dancing. Idle arms now hang at the sides; they used to point up behind the head. Browser check: `node tests/e2e/emotes.mjs`.
+
+## October 2026 batch update
+
+**Controls.** Emotes moved to a hold-to-open wheel (G, rebindable): scroll the mouse wheel or point at a slice, release to play; on touch, tap Emote and a slice. Down alone drops through one-way platforms. Auto-placement of timed-out items is gone. The scouting-run banner is gone. Barbed wire is easier to read (same 11 px strip). Eight new skins (Cat, Bear, Pirate, Alien, Wizard, Chef, Dino, Bee): 16 in all.
+
+**Item changes.** A Ferris wheel needs only one gondola clear of walls (its pivot may sit in a wall). Saw rails take no grid squares: lay them through objects and build over them; the saw passes through. A broken crumbling platform vanishes whole. Shuttles travel 9 cells. Barbed wire can be bolted to Moving Platforms and Shuttle Blocks and rides with them through walls. Crossbows sit on a solid mount you can stand on.
+
+**Scoring and settings.** See Match rules and Scoring above: round limit, individual win requirements, comeback point, sole/first no longer stack. Protocol version 6.
+
+**Death effects.** Every cause of death has its own animation and sound (crush, sniper/crossbow, dart, cannonball, retracting spikes, barbed wire, spiky oval, void, drowning, tsunami, ghost, black hole, laser, saw/axe, lava/geyser), driven by the server's death event so every client plays the same one.
+
+**New items.** Paper Plane Maker (planes never kill, can be ridden, crumple on contact; fans make them strafe), Fan 3×1 (wind that levitates, pushes players and projectiles), Gravestone (touch it and a ghost hunts you through walls), Dart Turret (aims at the closest visible player within 6 cells; darts pierce), Ice 3 / Ice 5 (slippery overlay on any top surface, moving platforms included). Planes use fixed mover slots so riders and snapshots stay stable; everything is server-authoritative and in the snapshots.
+
+**Sandbox.** Main menu > Sandbox: any map, M opens every item, place freely, T respawns, no scoring. Runs entirely in the browser with the real rules and physics.
+
+**New maps.** Tropical Island (boat, sea, beach ball, beach, jungle trees; a tsunami 15 s in, 15 s up and 15 s down on repeat), Magma Works (lava lake and timed geysers), Orbital Lab (zero-g bays over the void), Sandstorm Dunes (sinkholes, cactus wire and a gust every 12 s). Mechanics are pure functions of the race tick (`shared/mapfx.ts`). `npx tsx scripts/bot-race-new-maps.ts 2` checks routes and bot finishes (medium bots: Magma 8/8, Orbital 8/8, Dunes 7/8, Tropical about 75%; hard bots 8/8 everywhere).
+
+Tests: `tests/unit/batch.test.ts` (43 tests), browser `tests/e2e/batch.mjs` (two clients in sync on new items, effects and the tsunami; sandbox menu), `tests/e2e/emotes.mjs` (wheel).

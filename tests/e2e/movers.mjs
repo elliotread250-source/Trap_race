@@ -63,7 +63,7 @@ try {
   await guest.page.waitForSelector('.player-row >> nth=1', { timeout: 10000 });
   await guest.page.click('text=Ready up');
   // score to win: host picks 6, the guest sees it, and the server rejects nonsense
-  await host.page.selectOption('select[aria-label="Score to win"]', '6');
+  await host.page.selectOption('select[aria-label="Points to win"]', '6');
   await guest.page.waitForTimeout(500);
   const tgt = await guest.page.evaluate(() => window.__trap.game.room.target);
   check('host sets the score to win and the guest sees it', tgt === 6, String(tgt));

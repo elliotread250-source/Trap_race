@@ -39,6 +39,11 @@
 - Browser (local production build): `tests/e2e/run.mjs` 12/12, `tests/e2e/movers.mjs` 15/15, `tests/e2e/mobile.mjs` pass, `tests/e2e/update.mjs` 8/8 (score target options and server rejection, "Players choosing" with no bot picks, AI picks leftovers after the human, wheel preview with partial gondolas, item art screenshots).
 - Load: `scripts/profile-load.ts`: six-player race with 18 moving bodies, holes, crossbows, snipers and bots: 0.15-0.36 ms p95 per tick, ~1.8 KB snapshots (~35 KB/s per client).
 
+## Batch update (Oct 24 2026), automated
+- `tests/unit/batch.test.ts` (43 tests): Down-only drop, no auto-place, 16 skins, wire strip unchanged; relaxed wheel rule, saw overlay, whole-crumble breaks, 9-cell shuttle, wire riding shuttles and moving platforms, standable crossbow; sole/first non-stacking, comeback streaks, round limit validation and a full round-limited match, handicaps; every plane, fan, gravestone/ghost, dart turret and ice rule; client snapshot sync of planes/ghosts/flowers; the four new maps (routes, tsunami timing and deaths, floating ball, lava, geysers, low gravity, gusts, item placement on each).
+- Browser: `tests/e2e/batch.mjs` 11/11, `tests/e2e/emotes.mjs` 9/9 (wheel), `run.mjs` 12/12, `movers.mjs` 15/15, `update.mjs` 8/8, `mobile.mjs` pass.
+- Bots: full bot matches with the new items on every new map end cleanly at a round limit; `scripts/bot-race-new-maps.ts`.
+
 ## Implemented, verified by hand or by benchmark only
 - Physical phones and tablets (only emulated so far; iOS Safari cannot lock orientation or go fullscreen, so it relies on the rotate prompt)
 - Bot completion rates (`scripts/bot-race.ts`, `scripts/bot-bench.ts`), numbers in README

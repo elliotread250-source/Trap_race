@@ -32,20 +32,31 @@ try {
   await page.screenshot({ path: `${SHOTS}/countdown-ready.png` });
   check('emote button shows once characters are on screen', await page.isVisible('.emote-toggle'));
   await page.waitForFunction(() => window.__trap.game.phase === 'race', null, { timeout: 10000 });
-  await page.keyboard.press('Digit2');
+  await page.keyboard.press('Digit3');
+  await page.waitForTimeout(200);
+  check('digit keys no longer trigger emotes', (await page.evaluate(() => { const g = window.__trap.game; return g.emotes.get(g.you)?.e ?? null; })) === null);
+  // hold G: the emote wheel opens; scroll the mouse wheel one notch to Dance; release G to play it
+  await page.mouse.move(640, 360);
+  await page.keyboard.down('KeyG');
+  await page.waitForTimeout(150);
+  check('holding G opens the emote wheel', await page.isVisible('.emote-wheel'));
+  await page.mouse.wheel(0, 100);
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `${SHOTS}/wheel.png` });
+  await page.keyboard.up('KeyG');
   await page.waitForTimeout(250);
   const mine = await page.evaluate(() => { const g = window.__trap.game; return g.emotes.get(g.you)?.e ?? null; });
-  check('key 2 starts the dance emote for the local player', mine === 1, String(mine));
+  check('scrolling one notch and releasing G plays Dance', mine === 1, String(mine));
+  check('the wheel closes on release', !(await page.isVisible('.emote-wheel')));
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${SHOTS}/dance.png` });
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(1200);
   await page.click('.emote-toggle');
-  check('the emote picker lists all ten emotes', (await page.$$('.emote-btn')).length === 10);
-  await page.screenshot({ path: `${SHOTS}/picker.png` });
-  await page.click('.emote-btn:has-text("Heart")');
+  check('the emote wheel lists all ten emotes', (await page.$$('.emote-wheel .slice')).length === 10);
+  await page.click('.emote-wheel .slice:has-text("Heart")');
   await page.waitForTimeout(300);
   const heart = await page.evaluate(() => { const g = window.__trap.game; return g.emotes.get(g.you)?.e ?? null; });
-  check('picking Heart in the picker plays it', heart === 7, String(heart));
+  check('tapping Heart on the wheel plays it', heart === 7, String(heart));
   await page.screenshot({ path: `${SHOTS}/heart.png` });
   // moving cancels the emote
   await page.keyboard.down('ArrowRight'); await page.waitForTimeout(400); await page.keyboard.up('ArrowRight');
