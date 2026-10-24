@@ -1,5 +1,5 @@
 // Typed network messages and server-side validation of everything a client sends.
-import type { Difficulty } from './config';
+import { EMOTES, type Difficulty } from './config';
 import type { PlacedObject, WorldSnapshot } from './world';
 import type { RaceEvent, RaceSnapshot } from './race';
 import type { RoundRow, PlayerTally } from './scoring';
@@ -39,7 +39,8 @@ export type ClientMsg =
   | { t: 'place'; round: number; x: number; y: number; rot: number; variant: number }
   | { t: 'in'; round: number; s: number; b: number[] }
   | { t: 'vote'; rematch: boolean }
-  | { t: 'ping'; c: number };
+  | { t: 'ping'; c: number }
+  | { t: 'emote'; e: number };
 
 export type ServerMsg =
   | { t: 'welcome'; you: string; token: string; code: string }
@@ -60,7 +61,8 @@ export type ServerMsg =
   | { t: 'matchEnd'; order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number }
   | { t: 'votes'; votes: string[] }
   | { t: 'notice'; msg: string }
-  | { t: 'pong'; c: number; s: number; r?: string };
+  | { t: 'pong'; c: number; s: number; r?: string }
+  | { t: 'emote'; pid: string; e: number };
 
 const DIFFS = new Set(['easy', 'medium', 'hard']);
 const str = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
@@ -93,6 +95,7 @@ export function parseClientMsg(raw: unknown): ClientMsg | null {
     case 'in': return int(m.round, 0, 999) && int(m.s, 0, 1e9) && Array.isArray(m.b) && m.b.length <= 30 && m.b.every(x => int(x, 0, 31)) ? (m as ClientMsg) : null;
     case 'vote': return typeof m.rematch === 'boolean' ? (m as ClientMsg) : null;
     case 'ping': return typeof m.c === 'number' ? (m as ClientMsg) : null;
+    case 'emote': return int(m.e, 0, EMOTES.length - 1) ? (m as ClientMsg) : null;
     default: return null;
   }
 }

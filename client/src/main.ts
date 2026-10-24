@@ -1,5 +1,5 @@
 import './style.css';
-import { CELL, fmtPts, SCORING } from '../../shared/config';
+import { CELL, EMOTES, fmtPts, SCORING } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import type { RaceEvent } from '../../shared/race';
 import { sfx, startMusic, unlockAudio } from './audio';
@@ -82,6 +82,7 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
       }
       break;
     }
+    case 'emote': sfx.click(); break;
     case 'shot': renderer.addTracer((e as Extract<RaceEvent, { type: 'shot' }>).pts); break;
     case 'absorb': { const a = e as Extract<RaceEvent, { type: 'absorb' }>; renderer.burst(a.x, a.y, 8, '#ff3bd0', 90, 0, 2.5); break; }
     case 'crumble': {
@@ -95,6 +96,16 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
 };
 
 // ------------------------------------------------ keyboard actions
+// emotes: number keys 1-9 and 0 while in a match (cosmetic, never affects the race)
+window.addEventListener('keydown', ev => {
+  const tgt = ev.target as HTMLElement | null;
+  if (ev.repeat || ui.screen !== 'game' || ui.paused || (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'SELECT' || tgt.tagName === 'TEXTAREA'))) return;
+  const m = /^Digit(\d)$/.exec(ev.code);
+  if (!m || game.phase === 'build' || game.phase === 'draft') return; // digits stay free while building and drafting
+  const i = m[1] === '0' ? 9 : Number(m[1]) - 1;
+  if (i < EMOTES.length) game.emote(i);
+});
+
 initInput((a, ev) => {
   unlockAudio();
   if (ui.screen !== 'game') return;

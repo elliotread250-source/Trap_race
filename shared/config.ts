@@ -179,6 +179,21 @@ export const BOT_DIFFICULTY: Record<Difficulty, {
   hard: { reaction: 0.1, safetyCheck: 1, mistakePerSec: 0, routeNoise: 0.05, alignTol: 1.5, coinGreed: 0.8, riskTolerance: 0.15, hazardPlacement: 0.85 },
 };
 
+/** Cosmetic emotes. Index is what goes over the network; keys 1-9 and 0 trigger them in that order. */
+export const EMOTES = [
+  { id: 'wave', name: 'Wave', bubble: 'Hi!' },
+  { id: 'dance', name: 'Dance', bubble: '♪♫' },
+  { id: 'spin', name: 'Spin', bubble: 'Wheee!' },
+  { id: 'flex', name: 'Flex', bubble: 'Strong!' },
+  { id: 'laugh', name: 'Laugh', bubble: 'HA HA' },
+  { id: 'cry', name: 'Cry', bubble: 'Noooo' },
+  { id: 'point', name: 'Point', bubble: 'You!' },
+  { id: 'heart', name: 'Heart', bubble: '♥' },
+  { id: 'thumbs', name: 'Thumbs up', bubble: 'Nice!' },
+  { id: 'floss', name: 'Floss', bubble: '♪' },
+] as const;
+export const EMOTE = { durationS: 2.6, cooldownMs: 900 };
+
 export const PROTECT_PAD_CELLS = 2; // ~3 character widths around start and finish
 
 export const NET = {

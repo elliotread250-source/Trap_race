@@ -1,5 +1,5 @@
 // Room membership and the server-owned match phase machine. No Node or DOM APIs: solo practice runs this in the browser.
-import { MATCH, PROTOCOL_VERSION, SCORING, TICK_HZ, TIMERS, SNAPSHOT_EVERY_TICKS, NET, type Difficulty } from '../shared/config';
+import { EMOTE, MATCH, PROTOCOL_VERSION, SCORING, TICK_HZ, TIMERS, SNAPSHOT_EVERY_TICKS, NET, type Difficulty } from '../shared/config';
 import { getItem, ITEM_LIST, type DraftGroup } from '../shared/items';
 import { MAP_LIST, MAPS, selectableMap } from '../shared/maps';
 import { baseNav, NavGraph } from '../shared/nav';
@@ -54,6 +54,7 @@ export class Room {
   lastActivity = 0;
   closed = false;
   votes = new Set<string>();
+  private lastEmote = new Map<string, number>();
   private seq = 1;
   private deliver: Deliver;
   seed: number;
@@ -174,6 +175,14 @@ export class Room {
       case 'vote':
         if (this.phase === 'matchEnd') { if (msg.rematch) this.votes.add(id); else this.votes.delete(id); this.broadcast({ t: 'votes', votes: [...this.votes] }); this.maybeRematchByVote(); }
         break;
+      case 'emote': {
+        // cosmetic only: never touches the simulation; rate-limited so it can't be used to spam the room
+        const last = this.lastEmote.get(id) ?? -Infinity;
+        if (this.timeMs - last < EMOTE.cooldownMs || this.phase === 'lobby') break;
+        this.lastEmote.set(id, this.timeMs);
+        this.broadcast({ t: 'emote', pid: id, e: msg.e });
+        break;
+      }
       case 'leave': this.removeMember(id); break;
       default: break;
     }

@@ -1,5 +1,5 @@
 // Client state: mirrors what the server says, predicts only the local player's movement, interpolates everyone else.
-import { DT, HAZARD, PHYS, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config';
+import { DT, EMOTE, HAZARD, PHYS, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config';
 import { laserInOff, moverRect } from '../../shared/hazards';
 import { childRect } from '../../shared/movers';
 import { getItem } from '../../shared/items';
@@ -54,6 +54,9 @@ export class GameClient {
   results: { rows: RoundRow[]; competitive: boolean } | null = null;
   matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number } | null = null;
   votes: string[] = [];
+  /** emotes playing right now: player id -> emote index and when it started (performance.now) */
+  emotes = new Map<string, { e: number; at: number }>();
+  private lastEmoteSent = 0;
   toasts: Toast[] = [];
   fx: Fx[] = [];
   spectateIdx = 0;
@@ -116,6 +119,24 @@ export class GameClient {
   }
 
   send(m: ClientMsg) { this.transport?.send(m); }
+
+  /** Play an emote: shown locally at once, relayed by the server to everyone (cosmetic, rate-limited there too). */
+  emote(e: number) {
+    const now = performance.now();
+    if (now - this.lastEmoteSent < EMOTE.cooldownMs || this.phase === 'lobby' || !this.room) return;
+    this.lastEmoteSent = now;
+    this.emotes.set(this.you, { e, at: now });
+    this.send({ t: 'emote', e });
+  }
+
+  /** The emote a player is showing now, if any: it ends after its duration or as soon as they move. */
+  activeEmote(id: string, moving: boolean): { e: number; age: number } | null {
+    const em = this.emotes.get(id);
+    if (!em) return null;
+    const age = (performance.now() - em.at) / 1000;
+    if (age > EMOTE.durationS || moving) { this.emotes.delete(id); return null; }
+    return { e: em.e, age };
+  }
 
   private savedToken(): string | undefined {
     try { return sessionStorage.getItem('trapRace.token') ?? undefined; } catch { return undefined; }
@@ -209,6 +230,7 @@ export class GameClient {
       case 'matchEnd': this.matchEnd = { order: m.order, winners: m.winners, tally: m.tally, votes: m.votes, target: m.target, rows: m.rows, round: m.round }; this.votes = m.votes; if (m.winners.includes(this.you)) this.onEvent({ type: 'results' }); break;
       case 'votes': this.votes = m.votes; break;
       case 'pong': break;
+      case 'emote': this.emotes.set(m.pid, { e: m.e, at: m.pid === this.you && this.emotes.get(m.pid)?.e === m.e ? this.emotes.get(m.pid)!.at : performance.now() }); this.onEvent({ type: 'emote', pid: m.pid, e: m.e }); break;
     }
     this.onChange();
   }

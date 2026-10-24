@@ -1,6 +1,6 @@
 // Original procedural vector art. Characters are drawn around the shared 28x42 body; ears, hats and tails are
 // decoration outside it and never change the hitbox.
-import { CELL, HAZARD, MOVERS, PHYS } from '../../shared/config';
+import { CELL, EMOTES, HAZARD, MOVERS, PHYS } from '../../shared/config';
 import { DIRS, rotDirIndex, rotateMask, type Rot } from '../../shared/grid';
 import { getItem, type ItemDef } from '../../shared/items';
 import { splitRspike } from '../../shared/world';
@@ -19,9 +19,18 @@ export const SKINS: SkinDef[] = [
   { id: 'knight', name: 'Knight', body: '#b9c3cf', belly: '#8e99a8', dark: '#596372', detail: '#e2463e' },
 ];
 
-export type AnimState = 'idle' | 'run' | 'sprint' | 'jump' | 'fall' | 'wallslide' | 'walljump' | 'land' | 'celebrate' | 'ghost';
+export type AnimState = 'idle' | 'run' | 'sprint' | 'jump' | 'fall' | 'wallslide' | 'walljump' | 'land' | 'celebrate' | 'ghost' | 'skid' | 'ready' | 'bored';
 
-export interface Pose { state: AnimState; t: number; facing: number; squash?: number; wallDir?: number }
+export interface Pose {
+  state: AnimState; t: number; facing: number; squash?: number; wallDir?: number;
+  /** index into EMOTES while an emote plays, with the seconds since it started */
+  emote?: number; emoteT?: number;
+  /** which dance a finisher celebrates with (stable per player) */
+  dance?: number;
+}
+
+/** Dances a finisher cycles through on the flag (indices into EMOTES). */
+export const VICTORY_DANCES = [1, 9, 3, 7];
 
 const BW = PHYS.bodyW, BH = PHYS.bodyH;
 
@@ -43,21 +52,54 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
   ctx.save();
   ctx.translate(cx, feet);
   let lean = 0, bob = 0, legA = 0, armA = 0, armUp = 0, sx = 1, sy = 1;
+  let headTilt = 0, spinX = 1;
+  let armF: number | null = null, armB: number | null = null; // explicit arm angles (raised forward from hanging), when an emote sets them
+  let bubble: string | null = null;
+  let tears = false, emoteId: string | null = null;
   switch (pose.state) {
-    case 'idle': bob = Math.sin(t * 3) * 0.8; armA = Math.sin(t * 3) * 0.08; break;
+    case 'idle': bob = Math.sin(t * 3) * 0.8; armA = Math.sin(t * 3) * 0.08; headTilt = Math.sin(t * 0.9) * 0.04; break;
+    case 'bored': { // waited a while: looks around and taps a foot
+      bob = Math.sin(t * 3) * 0.8; headTilt = Math.sin(t * 1.3) * 0.18; legA = Math.max(0, Math.sin(t * 7)) * 0.25; armA = 0.15; break;
+    }
+    case 'ready': { // countdown crouch: knees bent, arms back, bouncing on the spot
+      const k = Math.abs(Math.sin(t * 5)); sy = 0.92 + k * 0.05; sx = 1.04; lean = 0.12; armF = -0.6; armB = -0.8; legA = 0.15; bob = k * 1.5; break;
+    }
+    case 'skid': { lean = -0.28; legA = -0.55; armF = 1.1; armB = 1.3; sy = 0.95; break; } // braking hard after a turn
     case 'run': legA = Math.sin(t * 15) * 0.7; armA = -legA * 0.7; bob = Math.abs(Math.sin(t * 15)) * 1.5; lean = 0.06; break;
     case 'sprint': legA = Math.sin(t * 21) * 0.95; armA = -legA * 0.9; bob = Math.abs(Math.sin(t * 21)) * 2; lean = 0.16; break;
     case 'jump': legA = 0.5; armUp = 0.9; sy = 1.05; sx = 0.96; break;
-    case 'fall': legA = -0.25; armUp = 0.45; break;
+    case 'fall': legA = -0.25; armUp = 0.45 + Math.sin(t * 18) * 0.15; break; // arms flail a little on the way down
     case 'wallslide': legA = 0.3; armUp = 1.4; lean = -0.12; break;
     case 'walljump': legA = 0.7; armUp = 1.1; lean = 0.25; break;
     case 'land': sy = 0.86; sx = 1.1; break;
     case 'celebrate': armUp = 1.8 + Math.sin(t * 10) * 0.2; bob = -Math.abs(Math.sin(t * 6)) * 6; break;
     default: break;
   }
+  // finishers dance on the flag; emotes override the base pose
+  let em = pose.emote;
+  let et = pose.emoteT ?? t;
+  if (em === undefined && pose.state === 'celebrate' && pose.dance !== undefined) { em = VICTORY_DANCES[pose.dance % VICTORY_DANCES.length]; et = t; }
+  if (em !== undefined && EMOTES[em]) {
+    emoteId = EMOTES[em].id;
+    if (pose.emote !== undefined) bubble = EMOTES[em].bubble;
+    legA = 0; armA = 0; armUp = 0; lean = 0; bob = 0;
+    switch (emoteId) {
+      case 'wave': armF = 2.7 + Math.sin(et * 12) * 0.45; armB = 0.1; headTilt = 0.08; bob = Math.sin(et * 6) * 0.8; break;
+      case 'dance': { const b = Math.sin(et * 8); bob = -Math.abs(b) * 4; lean = Math.sin(et * 4) * 0.16; armF = b > 0 ? 2.6 : 0.4; armB = b > 0 ? 0.4 : 2.6; legA = b * 0.35; headTilt = Math.sin(et * 4) * 0.12; break; }
+      case 'spin': spinX = Math.cos(et * 9); bob = -Math.abs(Math.sin(et * 9)) * 5; armF = 1.6; armB = 1.6; break;
+      case 'flex': { const p = 0.5 + 0.5 * Math.sin(et * 6); armF = 2.2; armB = 2.2; sx = 1.04 + p * 0.06; sy = 1 - p * 0.03; lean = -0.05; break; }
+      case 'laugh': lean = -0.18 + Math.sin(et * 28) * 0.03; bob = Math.sin(et * 28) * 1.2; armF = 0.5; armB = 0.5; headTilt = -0.15; break;
+      case 'cry': lean = 0.12; armF = 2.5; armB = 2.5; bob = Math.sin(et * 20) * 0.6; headTilt = 0.2; tears = true; break;
+      case 'point': armF = 1.57 + Math.sin(et * 5) * 0.05; armB = 0.2; lean = 0.08; legA = 0.25; headTilt = 0.05; break;
+      case 'heart': armF = 2.9; armB = 2.9; bob = -Math.abs(Math.sin(et * 5)) * 3; sx = 1 + Math.sin(et * 10) * 0.02; break;
+      case 'thumbs': armF = 1.2; armB = 0.1; headTilt = Math.sin(et * 7) * 0.1; bob = Math.sin(et * 7) * 0.8; break;
+      case 'floss': { const f = Math.sin(et * 11); armF = 0.6 + f * 0.9; armB = 0.6 - f * 0.9; lean = -f * 0.12; legA = f * 0.15; bob = -Math.abs(f) * 1.5; break; }
+      default: break;
+    }
+  }
   if (pose.squash) { sy *= 1 - pose.squash * 0.18; sx *= 1 + pose.squash * 0.14; }
   const face = pose.facing >= 0 ? 1 : -1;
-  ctx.scale(face * sx, sy);
+  ctx.scale(face * sx * (Math.abs(spinX) < 0.15 ? 0.15 * Math.sign(spinX || 1) : spinX), sy);
   ctx.rotate(lean);
   ctx.translate(0, bob);
   const line = 'rgba(14,10,30,.9)';
@@ -96,18 +138,21 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
   else { ctx.beginPath(); ctx.ellipse(1, -18, 6, 7, 0, 0, Math.PI * 2); ctx.fill(); }
 
   // arms
+  // arm angle: 0 hangs straight down, positive raises it forward (PI is straight up)
   const arm = (ang: number, sideX: number, front: boolean) => {
-    ctx.save(); ctx.translate(sideX, -24); ctx.rotate(Math.PI + ang);
+    ctx.save(); ctx.translate(sideX, -24); ctx.rotate(-ang);
     ctx.fillStyle = front ? s.body : s.dark; ctx.strokeStyle = line;
     if (s.id === 'penguin') ctx.fillStyle = s.body;
     rr(ctx, -2.5, 0, 5, 11, 2.5); ctx.fill(); ctx.stroke();
     ctx.restore();
   };
-  arm(-armA - armUp, -9, false);
-  arm(armA + armUp * 0.8, 9, true);
+  arm(armB ?? -armA + armUp, -9, false);
+  arm(armF ?? armA + armUp * 0.8, 9, true);
+  if (emoteId === 'thumbs') { ctx.save(); ctx.translate(9, -24); ctx.rotate(-(armF ?? 0)); ctx.fillStyle = s.body; ctx.strokeStyle = line; ctx.beginPath(); ctx.arc(0, 12, 3.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); rr(ctx, -1.2, 12, 2.4, 6, 1.2); ctx.fill(); ctx.stroke(); ctx.restore(); }
 
-  // head
+  // head (tilts for idle glances and emotes)
   const hy = -36;
+  ctx.save(); ctx.translate(0, hy + 8); ctx.rotate(headTilt); ctx.translate(0, -(hy + 8));
   ctx.fillStyle = s.body; ctx.strokeStyle = line;
   if (s.id === 'robot') { rr(ctx, -10, hy - 9, 20, 17, 4); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, hy - 9); ctx.lineTo(0, hy - 15); ctx.stroke(); ctx.fillStyle = '#ff5e8a'; ctx.beginPath(); ctx.arc(0, hy - 16, 2.5, 0, Math.PI * 2); ctx.fill(); }
   else if (s.id === 'knight') { rr(ctx, -10, hy - 10, 20, 19, 6); ctx.fill(); ctx.stroke(); ctx.fillStyle = s.detail; ctx.beginPath(); ctx.moveTo(-2, hy - 10); ctx.quadraticCurveTo(-10, hy - 22, 6, hy - 20); ctx.quadraticCurveTo(2, hy - 14, 3, hy - 10); ctx.fill(); }
@@ -122,9 +167,10 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
   if (s.id === 'ninja') { ctx.fillStyle = s.detail; ctx.fillRect(-11, hy - 5, 22, 4); ctx.beginPath(); ctx.moveTo(-10, hy - 3); ctx.lineTo(-19, hy - 6 + Math.sin(t * 9) * 2); ctx.lineTo(-18, hy + 1); ctx.closePath(); ctx.fill(); }
   if (s.id === 'astronaut') { ctx.fillStyle = s.detail; rr(ctx, -3, hy - 6, 13, 10, 5); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.arc(6, hy - 3, 2, 0, Math.PI * 2); ctx.fill(); }
 
-  // faces
+  // faces (everyone blinks every few seconds, at their own moment)
   ctx.fillStyle = s.detail;
-  const eye = (ex: number, ey: number, r = 2) => { ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI * 2); ctx.fill(); };
+  const blink = ((t + skinIdx * 0.7) % 3.4) < 0.12 || emoteId === 'laugh';
+  const eye = (ex: number, ey: number, r = 2) => { ctx.beginPath(); if (blink) ctx.ellipse(ex, ey, r, Math.max(0.5, r * 0.2), 0, 0, Math.PI * 2); else ctx.arc(ex, ey, r, 0, Math.PI * 2); ctx.fill(); };
   switch (s.id) {
     case 'fox': eye(2, hy - 2); eye(7, hy - 2); ctx.fillStyle = '#1b0d05'; eye(10, hy + 3, 1.6); break;
     case 'robot': ctx.fillStyle = s.detail; rr(ctx, -6, hy - 5, 15, 6, 3); ctx.fill(); ctx.fillStyle = '#073042'; eye(1, hy - 2, 1.4); eye(6, hy - 2, 1.4); break;
@@ -136,6 +182,11 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
     case 'astronaut': break;
     default: break;
   }
+  if (tears) { ctx.fillStyle = '#7ad1ff'; for (const [tx, ph] of [[2, 0], [8, 0.5]]) { const k = ((t * 1.6 + ph) % 1); ctx.beginPath(); ctx.ellipse(tx, hy + 2 + k * 14, 1.6, 2.4, 0, 0, Math.PI * 2); ctx.fill(); } }
+  if (emoteId === 'laugh') { ctx.fillStyle = '#1b0d18'; ctx.beginPath(); ctx.ellipse(5, hy + 5, 3.5, 2.2 + Math.abs(Math.sin(t * 28)), 0, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore(); // head tilt
+  if (emoteId === 'heart') { ctx.fillStyle = '#ff5e8a'; ctx.strokeStyle = line; ctx.lineWidth = 1.5; const hx = 0, hy2 = -62 - Math.abs(Math.sin(t * 5)) * 3; ctx.beginPath(); ctx.moveTo(hx, hy2 + 5); ctx.bezierCurveTo(hx - 9, hy2 - 3, hx - 4, hy2 - 9, hx, hy2 - 4); ctx.bezierCurveTo(hx + 4, hy2 - 9, hx + 9, hy2 - 3, hx, hy2 + 5); ctx.fill(); ctx.stroke(); }
+  if (emoteId === 'dance' || emoteId === 'floss') { ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.save(); ctx.scale(face, 1); ctx.fillText('♪', -16 + Math.sin(t * 3) * 3, -48 - ((t * 20) % 14)); ctx.restore(); }
   ctx.restore();
 
   // accent: player colour ring under the feet + coin marker above the head
@@ -144,6 +195,24 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
   ctx.beginPath(); ctx.ellipse(cx, feet + 1, 13, 3.5, 0, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
   if (carryingCoins > 0) drawCoinMarker(ctx, cx, y - 26, carryingCoins, t);
+  if (bubble) drawBubble(ctx, cx, y - (carryingCoins > 0 ? 62 : 48), bubble, pose.emoteT ?? 0); // above the name tag
+}
+
+/** A small speech bubble above a character, popping in and fading out over the emote's lifetime. */
+export function drawBubble(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, age: number) {
+  const pop = Math.min(1, age / 0.15), fade = Math.max(0, Math.min(1, (2.6 - age) / 0.4));
+  if (fade <= 0) return;
+  ctx.save();
+  ctx.globalAlpha *= fade;
+  ctx.font = 'bold 12px sans-serif';
+  const w = ctx.measureText(text).width + 14, h = 20;
+  ctx.translate(x, y); ctx.scale(pop, pop);
+  ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.strokeStyle = 'rgba(20,14,40,.9)'; ctx.lineWidth = 2;
+  rr(ctx, -w / 2, -h, w, h, 8); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-5, -1); ctx.lineTo(0, 6); ctx.lineTo(5, -1); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = text === '♥' ? '#ff3b6a' : '#1d1630'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, -h / 2 + 1);
+  ctx.restore();
 }
 
 export function drawCoinMarker(ctx: CanvasRenderingContext2D, x: number, y: number, n: number, t: number) {

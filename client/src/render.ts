@@ -43,7 +43,7 @@ export class Renderer {
   dpr = 1;
   private terrainCache: { key: string; canvas: HTMLCanvasElement } | null = null;
   private particles: Particle[] = [];
-  private anim = new Map<string, { land: number; wj: number; lastG: boolean }>();
+  private anim = new Map<string, { land: number; wj: number; lastG: boolean; still: number; skid: number }>();
   private devNav: { key: string; nav: NavGraph } | null = null;
   t = 0;
   fps = 60;
@@ -697,24 +697,35 @@ export class Renderer {
         else b = { x: rp.x, y: rp.y, vx: rp.vx, vy: rp.vy, g: rp.snap.g === 1, ws: rp.snap.ws === 1, wd: rp.snap.wd, f: rp.snap.f };
       }
       if (p.status === 'dead') continue;
-      const a = this.anim.get(p.id) ?? { land: 0, wj: 0, lastG: true };
+      const a = this.anim.get(p.id) ?? { land: 0, wj: 0, lastG: true, still: 0, skid: 0 };
       if (b.g && !a.lastG) { a.land = 0.12; this.burst(b.x + BW / 2, b.y + BH, 5, 'rgba(255,255,255,.7)', 70, 200, 2.5); }
       if (!b.g && a.lastG && b.vy < -100) this.burst(b.x + BW / 2, b.y + BH, 3, 'rgba(255,255,255,.5)', 50, 100, 2);
       a.lastG = b.g; a.land = Math.max(0, a.land - 1 / 60); a.wj = Math.max(0, a.wj - 1 / 60);
+      // standing still long enough turns idle into a fidget; braking against your speed after a turn is a skid
+      a.still = b.g && Math.abs(b.vx) < 5 ? a.still + 1 / 60 : 0;
+      const braking = b.g && Math.abs(b.vx) > 150 && Math.sign(b.vx) !== Math.sign(b.f) && b.f !== 0;
+      a.skid = braking ? 0.12 : Math.max(0, a.skid - 1 / 60);
+      if (braking && Math.random() < 0.6 * this.particleBudget()) this.burst(b.x + BW / 2, b.y + BH, 1, 'rgba(255,255,255,.65)', 60, -40, 2.5);
       this.anim.set(p.id, a);
       let state: AnimState = 'idle';
       if (p.status === 'finished') state = 'celebrate';
+      else if (g.phase === 'countdown') state = 'ready';
       else if (b.ws) state = 'wallslide';
       else if (!b.g) state = b.vy < 0 ? (Math.abs(b.vx) > 200 && a.wj > 0 ? 'walljump' : 'jump') : 'fall';
       else if (a.land > 0) state = 'land';
+      else if (a.skid > 0) state = 'skid';
       else if (Math.abs(b.vx) > 260) state = 'sprint';
       else if (Math.abs(b.vx) > 20) state = 'run';
+      else if (a.still > 5) state = 'bored';
       if (b.ws && Math.random() < 0.3 * this.particleBudget()) this.burst(b.x + (b.wd > 0 ? BW : 0), b.y + BH - 6, 1, 'rgba(255,255,255,.6)', 30, -60, 2);
+      // emotes play while standing still (or while finished / waiting); moving cancels them
+      const em = g.activeEmote(p.id, state === 'run' || state === 'sprint' || state === 'jump' || state === 'walljump' || state === 'wallslide' || state === 'fall');
+      const dance = Array.from(p.id).reduce((h, ch) => h + ch.charCodeAt(0), 0);
       const facing = b.ws ? -b.wd * -1 : b.f;
       ctx.save();
       if (p.effects.immune > 0 && Math.floor(t * 20) % 2) ctx.globalAlpha = 0.45;
       if (!p.connected) ctx.globalAlpha = 0.5;
-      drawCharacter(ctx, skin, b.x, b.y, { state, t: t + p.id.length, facing: facing || 1, wallDir: b.wd }, color, p.coins.length || (sim.coins.filter(c => c.carrier === p.id && c.state === 'carried').length));
+      drawCharacter(ctx, skin, b.x, b.y, { state, t: t + p.id.length, facing: facing || 1, wallDir: b.wd, emote: em?.e, emoteT: em?.age, dance }, color, p.coins.length || (sim.coins.filter(c => c.carrier === p.id && c.state === 'carried').length));
       ctx.restore();
       // effects
       if (p.effects.shield > 0) { ctx.save(); ctx.strokeStyle = 'rgba(122,168,255,.85)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(b.x + BW / 2, b.y + BH / 2, BW, BH * 0.75, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }

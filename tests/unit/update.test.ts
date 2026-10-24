@@ -643,3 +643,22 @@ describe('impossible courses', () => {
     expect(checkPlacement(w, { item: 'block_1x1', x: 20, y: 8, rot: 0, variant: 0 }).ok).toBe(false); // ordinary items never overlap terrain
   });
 });
+
+describe('emotes', () => {
+  it('relays a valid emote to everyone, rate-limits it, ignores bad indices and never touches the race', () => {
+    const { room, inbox } = mkRoom();
+    const a = human(room, 'A'), b = human(room, 'B');
+    room.handle(a.id, { t: 'emote', e: 1 }); // lobby: nothing to show it on
+    expect((inbox.get(b.id) ?? []).some(m => m.t === 'emote')).toBe(false);
+    room.addBot('easy'); room.startMatch();
+    room.handle(a.id, { t: 'emote', e: 1 });
+    room.handle(a.id, { t: 'emote', e: 2 }); // inside the cooldown
+    room.handle(a.id, { t: 'emote', e: 99 }); // not an emote
+    room.handle(a.id, { t: 'emote', e: 1.5 });
+    const got = (inbox.get(b.id) ?? []).filter(m => m.t === 'emote') as Extract<ServerMsg, { t: 'emote' }>[];
+    expect(got).toEqual([{ t: 'emote', pid: a.id, e: 1 }]);
+    ticks(room, 1000);
+    room.handle(a.id, { t: 'emote', e: 9 });
+    expect((inbox.get(b.id) ?? []).filter(m => m.t === 'emote')).toHaveLength(2);
+  });
+});

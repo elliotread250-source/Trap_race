@@ -1,5 +1,5 @@
 // DOM interface. Names and other player text are always set with textContent, never parsed as HTML.
-import { fmtPts, GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
+import { EMOTES, fmtPts, GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import { MAP_LIST } from '../../shared/maps';
 import { World } from '../../shared/world';
@@ -27,7 +27,7 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, 
 
 type Screen = 'menu' | 'join' | 'ai' | 'practice' | 'howto' | 'skins' | 'settings' | 'game' | 'connecting';
 
-const previews = new Set<{ canvas: HTMLCanvasElement; skin: number; color: string; state: 'idle' | 'run' | 'celebrate' | 'wallslide' }>();
+const previews = new Set<{ canvas: HTMLCanvasElement; skin: number; color: string; state: 'idle' | 'run' | 'celebrate' | 'wallslide'; emote?: number }>();
 /** Extra build-bar guidance for the items whose rules are spatial rather than visible in their footprint. */
 function buildTip(kind: string, rotationNote: string): string {
   if (kind === 'shuttle' || kind === 'moving') return 'Shaded cells show its whole path. It passes through walls and blocks, may start partly inside a wall (amber), and crushes anyone it pins. ' + rotationNote;
@@ -39,9 +39,9 @@ function buildTip(kind: string, rotationNote: string): string {
 
 const moverCards = new Set<{ canvas: HTMLCanvasElement; item: string }>();
 
-function skinCanvas(skin: number, color: string, w: number, hgt: number, state: 'idle' | 'run' | 'celebrate' | 'wallslide' = 'idle') {
+function skinCanvas(skin: number, color: string, w: number, hgt: number, state: 'idle' | 'run' | 'celebrate' | 'wallslide' = 'idle', emote?: number) {
   const c = h('canvas', { width: w * 2, height: hgt * 2 });
-  previews.add({ canvas: c, skin, color, state });
+  previews.add({ canvas: c, skin, color, state, emote });
   return c;
 }
 export function animatePreviews(t: number) {
@@ -57,7 +57,8 @@ export function animatePreviews(t: number) {
     const scale = p.canvas.height / 70;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     const w = p.canvas.width / scale;
-    drawCharacter(ctx, p.skin, w / 2 - 14, 24, { state: p.state, t, facing: 1 }, p.color);
+    // looping emote previews (winners dancing, the emote picker) restart every few seconds
+    drawCharacter(ctx, p.skin, w / 2 - 14, 24, { state: p.state, t, facing: 1, emote: p.emote, emoteT: p.emote !== undefined ? (t % 2.2) + 0.2 : undefined }, p.color);
   }
 }
 
@@ -506,6 +507,7 @@ export class UI {
     const voted = g.votes.includes(g.you);
     return h('div', { class: 'screen' }, h('div', { class: 'card wide' },
       h('h2', {}, `Match over · first to ${me.target}`),
+      h('div', { class: 'winner-dance' }, ...me.winners.map((id, i) => { const m = g.member(id); return skinCanvas(m?.skin ?? 0, PLAYER_COLORS[(m?.color ?? 0) % PLAYER_COLORS.length], 90, 105, 'celebrate', [1, 9, 3, 7][i % 4]); })),
       h('div', { class: 'winner' }, names.length > 1 ? `Shared victory: ${names.join(' & ')}` : `${names[0] ?? 'Nobody'} wins!`,
         h('span', { class: 'small-note' }, ` ${fmtPts(me.tally[me.winners[0]]?.score ?? 0)} points after round ${me.round} (target ${me.target})`)),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' }, h('tr', {}, ...['#', 'Player', 'Score', 'Finishes', 'Total time'].map(t => h('th', {}, t))), ...rows)),
@@ -546,6 +548,7 @@ export class UI {
 
   // ======================================================== HUD (updated every frame, cheap)
   private hudEls: Record<string, HTMLElement> | null = null;
+  private emoteEls: { btn: HTMLElement; picker: HTMLElement } | null = null;
   private updateHud() {
     const g = this.g;
     const show = g.phase !== 'lobby' && !!g.room;
@@ -555,10 +558,19 @@ export class UI {
       const top = h('div', { class: 'hud-top' }, h('div', { class: 'chip', 'data-k': 'round' }), h('div', { class: 'chip timer', 'data-k': 'timer' }), h('div', { class: 'chip', 'data-k': 'score' }));
       const els = { round: top.children[0] as HTMLElement, timer: top.children[1] as HTMLElement, score: top.children[2] as HTMLElement, standings: h('div', { class: 'standings' }), left: h('div', { class: 'hud-left' }), banner: h('div', { class: 'banner hidden' }), count: h('div', { class: 'big-count hidden' }), spect: h('div', { class: 'spectate hidden' }), dev: h('div', { class: 'dev hidden' }), menuBtn: h('button', { class: 'btn small menu-btn', onclick: () => this.setPaused(true), 'aria-label': 'Menu' }, '☰') };
       top.append(els.menuBtn);
+      const picker = h('div', { class: 'emote-picker hidden', role: 'menu', 'aria-label': 'Emotes' },
+        ...EMOTES.map((em, i) => h('button', { class: 'emote-btn', role: 'menuitem', title: `${em.name} (${(i + 1) % 10})`, onclick: () => { this.g.emote(i); picker.classList.add('hidden'); } },
+          skinCanvas(settings.skin, PLAYER_COLORS[(this.g.me?.color ?? 0) % PLAYER_COLORS.length], 34, 40, 'idle', i), h('span', {}, em.name), h('kbd', {}, String((i + 1) % 10)))));
+      const emoteBtn = h('button', { class: 'btn small emote-toggle', 'aria-label': 'Emotes', title: 'Emotes (keys 1-0)', onclick: () => picker.classList.toggle('hidden') }, '☺ Emote');
+      this.emoteEls = { btn: emoteBtn, picker };
       this.layers.hud.replaceChildren(top, els.standings, els.left, els.banner, els.count, els.spect, els.dev);
+      if (this.emoteEls) this.layers.hud.append(this.emoteEls.btn, this.emoteEls.picker);
       this.hudEls = els;
     }
     const e = this.hudEls!;
+    // emotes are for when characters are on screen: countdown, race and the results that follow
+    const canEmote = (g.phase === 'countdown' || g.phase === 'race' || g.phase === 'results') && !!g.race && !g.me?.spectator;
+    if (this.emoteEls) { this.emoteEls.btn.classList.toggle('hidden', !canEmote); if (!canEmote) this.emoteEls.picker.classList.add('hidden'); }
     const left = g.timeLeft / 1000;
     const phaseName = { draft: 'Draft', build: 'Build', countdown: 'Get ready', race: 'Race', results: 'Results', matchEnd: 'Match over', lobby: '' }[g.phase];
     e.round.textContent = `Round ${g.round} · ${phaseName} · first to ${g.target}`;

@@ -233,3 +233,16 @@ table.results td.total { color: var(--accent); font-size: 16px; }
 /* draft stage banner: humans choose first, then the AI */
 .draft .stage { display: inline-block; margin: 2px 0 8px; padding: 4px 12px; border-radius: 999px; font-weight: 800; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; background: rgba(127, 240, 224, .14); color: #7ff0e0; border: 1px solid rgba(127, 240, 224, .4); }
 .draft .stage.ai { background: rgba(255, 190, 70, .14); color: #ffbe46; border-color: rgba(255, 190, 70, .45); }
+
+/* emotes */
+.emote-toggle { position: absolute; right: 12px; bottom: 12px; pointer-events: auto; z-index: 5; }
+.emote-picker { position: absolute; right: 12px; bottom: 52px; display: grid; grid-template-columns: repeat(5, 76px); gap: 6px; padding: 8px; background: rgba(20, 14, 44, .92); border: 1px solid rgba(255, 255, 255, .14); border-radius: 14px; pointer-events: auto; z-index: 6; }
+.emote-picker.hidden { display: none; }
+.emote-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 2px; background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1); border-radius: 10px; color: #fff; font: 600 11px/1.1 inherit; cursor: pointer; }
+.emote-btn:hover, .emote-btn:focus-visible { background: rgba(255, 210, 94, .18); border-color: rgba(255, 210, 94, .6); }
+.emote-btn canvas { width: 34px; height: 40px; }
+.emote-btn kbd { font-size: 10px; opacity: .7; }
+.winner-dance { display: flex; justify-content: center; gap: 12px; margin-top: 4px; }
+.winner-dance canvas { width: 90px; height: 105px; }
+@media (max-width: 720px) { .emote-picker { grid-template-columns: repeat(5, 60px); } .emote-toggle { bottom: auto; top: 54px; right: 8px; } .emote-picker { bottom: auto; top: 92px; } }
+.emote-toggle.hidden { display: none; }
