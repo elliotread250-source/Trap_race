@@ -62,7 +62,7 @@ export type ServerMsg =
   | { t: 'removed'; ids: string[]; by: string; cells: [number, number][]; version: number }
   | { t: 'placeFail'; msg: string }
   | { t: 'skip'; pid: string; msg: string }
-  | { t: 'raceStart'; ids: string[]; roundKey: string; maxTicks: number }
+  | { t: 'raceStart'; ids: string[]; roundKey: string; maxTicks: number; /** human racers (gravestone flowers) */ humans?: number }
   | { t: 'snap'; s: RaceSnapshot; ev: RaceEvent[] }
   | { t: 'results'; round: number; rows: RoundRow[]; competitive: boolean }
   | { t: 'matchEnd'; order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; roundLimit: number; targets: Record<string, number>; reason: 'target' | 'rounds'; rows: RoundRow[]; round: number }

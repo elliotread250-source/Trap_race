@@ -148,6 +148,31 @@ export const HAZARD = {
   spikeHeight: 20,
 };
 
+/** Batch-update items: Paper Plane Maker, Fan, Gravestone, Dart Turret (ice uses PHYS.ice*). */
+export const NEWITEMS = {
+  planeInterval: 1.4, // one plane every 1.4 s
+  planeSpeed: 207, // same as crossbow arrows (HAZARD.arrowSpeed)
+  planeLen: 96, // a 2x1 plane: two cells long along its travel...
+  planeThick: 24, // ...and half a cell thick (solid, standable)
+  planeSlots: 24, // planes alive at once per maker (a plane crossing a 116-cell map takes ~27 s)
+  planeHoleCrumple: 216, // within 4.5 cells of a black hole a plane crumples and is sucked in
+  planeStrafe: 150, // sideways speed a fan gives a plane flying across its wind (px/s)
+  planeHeadwindCells: 3, // flying straight into a fan's wind, a plane crumples within this many cells of it
+  fanRange: 5, // cells of wind out from the fan, across its 3-cell width
+  fanPushUp: 3000, // acceleration at the fan face for an upward fan (px/s^2): balances gravity ~2.7 cells up
+  fanPush: 1700, // at the face for sideways and downward fans
+  fanDamp: 4, // velocity damping along the wind inside the column, so a player settles into steady levitation
+  fanProjectileMul: 0.6, // projectiles feel this share of the wind
+  ghostWait: 1, // seconds a ghost waits at its grave before chasing
+  ghostSpeed: 198, // slightly slower than walking (PHYS.walkSpeed 220)
+  ghostR: 15,
+  turretRange: 288, // 6 cells of vision, blocked by walls
+  turretInterval: 2.0, // slightly faster than the sniper's 2.5 s
+  dartSpeed: 520, // faster than arrows (207), slower than sniper rounds (1500)
+  dartR: 3,
+  dirtH: 8, // the gravestone's dirt pile platform
+};
+
 /**
  * Kinematic platforms (Shuttle Block, Ferris Wheel). Motion is a pure function of race ticks since GO, so the server,
  * client prediction, rendering and bots all agree. Periods are whole ticks so the motion repeats exactly.

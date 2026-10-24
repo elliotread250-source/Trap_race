@@ -1,12 +1,13 @@
 // Data-driven item catalogue. Masks are occupied cells at rotation 0, anchored at the top-left of their bounding box.
 import type { Cell } from './grid';
-import { HAZARD, MOVERS, POWER } from './config';
+import { HAZARD, MOVERS, NEWITEMS, POWER } from './config';
 
 export type ItemKind =
   | 'block' | 'oneway' | 'spring' | 'conveyor' | 'moving' | 'crumble' | 'shuttle' | 'wheel'
   | 'oval' | 'rspikes' | 'saw' | 'laser' | 'pendulum'
   | 'blackhole' | 'sniper' | 'cannon' | 'crossbow' | 'wire'
-  | 'coin' | 'power' | 'bomb';
+  | 'coin' | 'power' | 'bomb'
+  | 'planemaker' | 'fan' | 'grave' | 'turret' | 'ice';
 
 export type DraftGroup = 'construction' | 'hazard' | 'utility' | 'demolition';
 export type PowerType = 'speed' | 'jump' | 'shield' | 'slow';
@@ -67,7 +68,14 @@ const defs: ItemDef[] = [
   { id: 'wheel', name: 'Ferris Wheel', kind: 'wheel', group: 'construction', category: 'Moving', mask: rect(1, 1), rotatable: true, solid: false, supportive: false, slowable: false, variants: ['Clockwise', 'Counter-clockwise'], weight: 0.7, desc: `Four solid 2×1 gondolas orbit a pivot ${MOVERS.wheelRadiusCells} cells away, one lap every ${MOVERS.wheelPeriodTicks / 60}s. Gondolas stay level and pass through walls and blocks. Place it as long as at least one gondola starts outside walls and blocks. The pivot is not solid and may sit inside a wall.`, rotationNote: 'Rotates: odd turns stand the gondolas upright (1×2). F flips the spin direction.' },
   { id: 'crumble', name: 'Crumbling Platform', kind: 'crumble', group: 'construction', category: 'Traversal', mask: rect(3, 1), rotatable: true, solid: true, supportive: false, slowable: false, weight: 0.7, desc: `Cracks on the first hit and on the second the whole platform falls away, for the rest of the round. A hit is a fresh landing, a fresh wall-slide, or a shot (arrow, cannonball, sniper). Standing still is one hit.`, rotationNote: ROT_ALL },
 
+  { id: 'planemaker', name: 'Paper Plane Maker', kind: 'planemaker', group: 'construction', category: 'Moving', mask: rect(1, 2), rotatable: true, solid: true, supportive: false, slowable: false, variants: ['Fires right', 'Fires left'], weight: 0.8, desc: `A robotic machine that folds and launches a 2×1 paper plane from its top cell every ${NEWITEMS.planeInterval}s, at crossbow-arrow speed. Planes never kill: stand on them and ride. They crumple on hitting players, objects, projectiles or moving bodies, near black holes, or when landed on while flying up. Planes flying down carry you down.`, rotationNote: 'Rotates: fire up, down or sideways. F flips which side it fires to.' },
+  { id: 'fan', name: 'Fan 3×1', kind: 'fan', group: 'construction', category: 'Traversal', mask: rect(3, 1), rotatable: true, solid: true, supportive: false, slowable: false, weight: 0.8, desc: `Blows players and projectiles ${NEWITEMS.fanRange} cells out across its 3-cell width, harder the closer they are. Facing up, you settle into steady levitation. Paper planes strafe across its wind and crumple flying into it. Its casing is solid: stand on it, wall-slide and wall-jump on it.`, rotationNote: 'Rotates: the wind turns with it (up by default).' },
+  { id: 'ice_3', name: 'Ice 3', kind: 'ice', group: 'construction', category: 'Surface', mask: rect(3, 1), rotatable: false, solid: false, supportive: false, slowable: false, overlay: true, weight: 0.6, desc: 'A slick sheet of ice laid on top of a block, platform or item (moving platforms included). Takes up no grid squares. Walking and sprinting slide: momentum carries.', rotationNote: 'Cannot rotate: always lies on a top surface.' },
+  { id: 'ice_5', name: 'Ice 5', kind: 'ice', group: 'construction', category: 'Surface', mask: rect(5, 1), rotatable: false, solid: false, supportive: false, slowable: false, overlay: true, weight: 0.5, desc: 'Five cells of slick ice on top of a block, platform or item. Takes up no grid squares; unsupported cells are trimmed away.', rotationNote: 'Cannot rotate: always lies on a top surface.' },
+
   // Hazards
+  { id: 'grave', name: 'Gravestone', kind: 'grave', group: 'hazard', category: 'Trap', mask: rect(1, 1), rotatable: false, solid: false, supportive: false, slowable: false, weight: 0.7, desc: `A haunted grave on a little dirt pile you can stand on. Touch the stone and a flower breaks: one of its ghosts waits ${NEWITEMS.ghostWait}s, then chases you through walls, slightly slower than walking. It kills you on contact (and anyone in its way). Reach the flag to lose it. One ghost per player per round.`, rotationNote: 'Cannot rotate.' },
+  { id: 'dart_turret', name: 'Dart Turret', kind: 'turret', group: 'hazard', category: 'Launcher', mask: rect(1, 1), rotatable: false, solid: true, supportive: false, slowable: false, weight: 0.7, desc: `Aims at the closest player it can see within 6 cells (walls block its view) and fires a fast dart every ${NEWITEMS.turretInterval}s. Darts pierce players and stop at objects. Solid: stand on it and wall-jump off it.`, rotationNote: 'Cannot rotate: it aims by itself.' },
   { id: 'spiky_oval', name: 'Spiky Oval 3×1', kind: 'oval', group: 'hazard', category: 'Trap', mask: rect(3, 1), rotatable: true, solid: false, supportive: false, slowable: false, weight: 1.1, desc: 'An oval covered in spikes, three cells long and one thick. Lethal to touch, owner included. Fixed in place.', rotationNote: 'Rotates: 3×1 ↔ 1×3.' },
   { id: 'rspikes', name: 'Retracting Spikes', kind: 'rspikes', group: 'hazard', category: 'Timed trap', mask: rect(2, 2), rotatable: true, solid: false, supportive: false, slowable: true, weight: 0.9, desc: `A 2×1 solid base block with spikes that rise from its top face: out ${HAZARD.rspikeOut}s, in ${HAZARD.rspikeIn}s, with a visible warning before they rise. Stand on the base while they are in. Slowed by Slow Pulse.`, rotationNote: 'Rotates the whole assembly: the spikes always sit on the outward face of the base (top by default).' },
   { id: 'saw', name: 'Saw Rail', kind: 'saw', group: 'hazard', category: 'Timed trap', mask: rect(4, 1), rotatable: true, solid: false, supportive: false, slowable: true, overlay: true, weight: 0.9, desc: 'A spinning saw runs back and forth along a 4-cell rail and passes straight through blocks and items. The rail takes up no grid squares: build over it, or lay it through other objects. Slowed by Slow Pulse.', rotationNote: 'Rotates: rail turns upright or flat.' },
@@ -107,7 +115,9 @@ export function getItem(id: string): ItemDef {
 export const SUPPORT_KINDS: ReadonlySet<ItemKind> = new Set(['block', 'conveyor']);
 /** Platforms whose solid bodies move on a fixed tick-based path (their swept area is reserved). */
 export const KINEMATIC_KINDS: ReadonlySet<ItemKind> = new Set(['shuttle', 'wheel']);
-export const HAZARD_KINDS: ReadonlySet<ItemKind> = new Set(['oval', 'rspikes', 'saw', 'laser', 'pendulum', 'blackhole', 'sniper', 'cannon', 'crossbow', 'wire']);
+/** Kinds a paper plane flies straight past (everything else it touches crumples it). */
+export const PLANE_PASSES: ReadonlySet<ItemKind> = new Set(['coin', 'power', 'ice', 'blackhole']);
+export const HAZARD_KINDS: ReadonlySet<ItemKind> = new Set(['oval', 'rspikes', 'saw', 'laser', 'pendulum', 'blackhole', 'sniper', 'cannon', 'crossbow', 'wire', 'grave', 'turret']);
 
 /**
  * Items that no longer exist. A saved world that still holds one is migrated explicitly (see migrateSnapshot):

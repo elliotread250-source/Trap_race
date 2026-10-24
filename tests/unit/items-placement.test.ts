@@ -43,9 +43,10 @@ describe('exact construction shapes', () => {
 });
 
 describe('rotation rules', () => {
-  it('every placeable item rotates except the sniper and the black hole', () => {
+  it('every placeable item rotates except the sniper, the black hole and the self-orienting batch items', () => {
     for (const d of ITEM_LIST) {
-      if (d.kind === 'sniper' || d.kind === 'blackhole') expect(d.rotatable).toBe(false);
+      // gravestones and dart turrets have no facing (the turret aims by itself); ice always lies on a top surface
+      if (d.kind === 'sniper' || d.kind === 'blackhole' || d.kind === 'grave' || d.kind === 'turret' || d.kind === 'ice') expect(d.rotatable).toBe(false);
       else expect(d.rotatable).toBe(true);
     }
   });

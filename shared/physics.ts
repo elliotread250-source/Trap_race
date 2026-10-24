@@ -33,7 +33,15 @@ export interface Body {
 }
 
 /** A solid moving body this tick: its rect now and the displacement it made since the previous tick. id is a stable child id. */
-export interface Mover { x: number; y: number; w: number; h: number; dx: number; dy: number; id?: string }
+export interface Mover {
+  x: number; y: number; w: number; h: number; dx: number; dy: number; id?: string;
+  /** never squeezes anyone to death (paper planes crumple instead) */
+  soft?: boolean;
+  /** solid only from above, like a one-way platform (gravestone dirt piles) */
+  top?: boolean;
+  /** riders slide on it (ice laid on a moving platform) */
+  ice?: boolean;
+}
 
 export interface PhysEnv {
   world: World;
@@ -67,7 +75,7 @@ function overlapsSolid(env: PhysEnv, x: number, y: number): boolean {
   const x0 = Math.floor(x / CELL), x1 = Math.floor((x + W - EPS) / CELL);
   const y0 = Math.floor(y / CELL), y1 = Math.floor((y + H - EPS) / CELL);
   for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) if (env.isSolid(cx, cy)) return true;
-  for (const m of env.movers) if (x < m.x + m.w && x + W > m.x && y < m.y + m.h && y + H > m.y) return true;
+  for (const m of env.movers) if (!m.top && x < m.x + m.w && x + W > m.x && y < m.y + m.h && y + H > m.y) return true;
   return false;
 }
 
@@ -88,6 +96,7 @@ const ESCAPE_MAX_PX = 8;
 function resolveSqueeze(b: Body, env: PhysEnv) {
   for (let i = 0; i < env.movers.length; i++) {
     const m = env.movers[i];
+    if (m.top) continue;
     const px = Math.min(b.x + W, m.x + m.w) - Math.max(b.x, m.x);
     const py = Math.min(b.y + H, m.y + m.h) - Math.max(b.y, m.y);
     if (px <= MOVERS.crushTolPx || py <= MOVERS.crushTolPx) continue;
@@ -110,7 +119,7 @@ function resolveSqueeze(b: Body, env: PhysEnv) {
       freed = true;
       break;
     }
-    if (!freed && b.crushMover < 0) b.crushMover = i;
+    if (!freed && b.crushMover < 0 && !m.soft) b.crushMover = i;
   }
 }
 
@@ -123,6 +132,7 @@ function spotFree(env: PhysEnv, x: number, y: number, skip: number): boolean {
   for (let j = 0; j < env.movers.length; j++) {
     if (j === skip) continue;
     const m = env.movers[j];
+    if (m.top) continue;
     if (x < m.x + m.w - tol && x + W > m.x + tol && y < m.y + m.h - tol && y + H > m.y + tol) return false;
   }
   return true;
@@ -158,7 +168,7 @@ function moveX(b: Body, env: PhysEnv, dx: number, skip = -1) {
   }
   for (let i = 0; i < env.movers.length; i++) {
     const m = env.movers[i];
-    if (i === skip || boxHit(prevX, b.y, m)) continue; // already inside: contact resolution handles it, never snap through
+    if (i === skip || m.top || boxHit(prevX, b.y, m)) continue; // already inside: contact resolution handles it, never snap through
     if (boxHit(b.x, b.y, m)) {
       if (dx > 0) b.x = m.x - W; else b.x = m.x + m.w;
       b.vx = 0;
@@ -189,6 +199,8 @@ function moveY(b: Body, env: PhysEnv, dy: number, skip = -1) {
   for (let i = 0; i < env.movers.length; i++) {
     const m = env.movers[i];
     if (i === skip || boxHit(b.x, prevY, m)) continue;
+    // top-only platforms catch a body only when it comes down onto them from above
+    if (m.top && (dy <= 0 || b.dropT > 0 || prevY + H > m.y + EPS)) continue;
     if (boxHit(b.x, b.y, m)) {
       if (dy > 0) { b.y = m.y - H; b.vy = 0; } else { b.y = m.y + m.h; b.vy = 0; b.jumpRising = false; }
     }
@@ -220,7 +232,7 @@ function probeGround(b: Body, env: PhysEnv) {
   }
   for (let i = 0; i < env.movers.length; i++) {
     const m = env.movers[i];
-    if (Math.abs(feet - m.y) < 0.6 && b.x < m.x + m.w && b.x + W > m.x) { b.grounded = true; b.groundMover = i; }
+    if (Math.abs(feet - m.y) < 0.6 && b.x < m.x + m.w && b.x + W > m.x && !(m.top && b.dropT > 0)) { b.grounded = true; b.groundMover = i; if (m.ice) b.groundSurf = S_ICE; }
   }
 }
 
@@ -239,6 +251,7 @@ function probeWall(b: Body, env: PhysEnv): number {
     for (let cy = y0; cy <= y1; cy++) if (env.isSolid(cx, cy)) { left = true; if (!lObj && w.inBounds(cx, cy)) lObj = w.collObj[w.idx(cx, cy)]; }
   }
   for (const m of env.movers) {
+    if (m.top) continue;
     if (b.y + 2 < m.y + m.h && b.y + H - 2 > m.y) {
       if (Math.abs(rx - m.x) < 0.6) right = true;
       if (Math.abs(lx - (m.x + m.w)) < 0.6) left = true;
@@ -344,7 +357,8 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
   }
 
   // dropping: Down alone falls through a one-way floor (no jump press needed); Down + Jump does the same
-  if (b.grounded && down && isOnOnewayOnly(b, env)) {
+  const onTop = b.grounded && b.groundMover >= 0 && !!env.movers[b.groundMover]?.top;
+  if (b.grounded && down && (isOnOnewayOnly(b, env) || onTop)) {
     b.dropT = PHYS.dropThroughTime; b.jumpBuf = 0; b.grounded = false; b.coyote = 0; b.y += 1;
   }
   // jumping

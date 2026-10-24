@@ -35,6 +35,11 @@ function buildTip(kind: string, rotationNote: string): string {
   if (kind === 'bomb') return 'Moving platforms freeze at their starting pose while you aim: hit a shuttle, any gondola or a wheel\'s pivot to remove the whole thing.';
   if (kind === 'wire') return rotationNote + ' Bolt it to a Moving Platform or Shuttle Block and it rides along, through walls too.';
   if (kind === 'sniper') return rotationNote + ' Snipers can\u2019t bolt onto moving platforms.';
+  if (kind === 'planemaker') return 'The dashed line shows where its paper planes fly. Planes never kill: stand on them. ' + rotationNote;
+  if (kind === 'fan') return 'Shaded lanes show its wind (5 cells, blocked by walls). Facing up, players float. ' + rotationNote;
+  if (kind === 'grave') return 'Touch the stone and a ghost hunts you. Its dirt pile is a platform. One flower per player, one ghost per player and bot.';
+  if (kind === 'turret') return 'The circle is its 6-cell vision; walls block its view. It aims by itself.';
+  if (kind === 'ice') return 'Lay it on top of a block, platform or item (moving platforms too). It takes no grid squares, so you can build over it.';
   if (kind === 'saw') return 'The rail takes up no grid squares: lay it through blocks and items, and build over it. The saw passes straight through. ' + rotationNote;
   return rotationNote;
 }
@@ -473,7 +478,7 @@ export class UI {
       h('div', { class: 'info' }, h('b', {}, def.name + (def.variants ? ` · ${def.variants[g.variant]}` : '')), h('span', {}, buildTip(def.kind, def.rotationNote))),
       status,
       def.rotatable && h('button', { class: 'btn small', onclick: () => g.rotate(1) }, 'Rotate'),
-      def.variants && h('button', { class: 'btn small', onclick: () => g.flip() }, def.kind === 'wheel' ? 'Flip spin' : 'Flip facing'),
+      def.variants && h('button', { class: 'btn small', onclick: () => g.flip() }, def.kind === 'wheel' ? 'Flip spin' : def.kind === 'planemaker' ? 'Flip side' : 'Flip facing'),
       h('button', { class: 'btn small', onclick: () => this.onZoom() }, 'Zoom'),
       h('button', { class: 'btn small', onclick: () => g.startRehearsal() }, 'Rehearse'),
       h('button', { class: 'btn primary', disabled: g.awaitingPlace, onclick: () => g.confirmPlace() }, def.kind === 'bomb' ? 'Detonate' : 'Place'),

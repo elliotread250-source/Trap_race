@@ -270,7 +270,13 @@ export function drawCoinShape(ctx: CanvasRenderingContext2D, x: number, y: numbe
 
 // ---------------------------------------------------------------- items
 
-export interface ItemDrawOpts { owner?: string; ghost?: boolean; t: number; phase?: number; state?: string; variant?: number; mapProv?: boolean }
+export interface ItemDrawOpts {
+  owner?: string; ghost?: boolean; t: number; phase?: number; state?: string; variant?: number; mapProv?: boolean;
+  /** gravestone: flower colours still standing and how many have broken; floating graves get a curved dirt bottom */
+  flowers?: string[]; broken?: number; floating?: boolean;
+  /** dart turret: barrel angle (radians, screen convention) */
+  aim?: number;
+}
 
 const C = CELL;
 
@@ -451,6 +457,31 @@ export function drawItem(ctx: CanvasRenderingContext2D, def: ItemDef, cells: [nu
     case 'power': {
       const [x, y] = px(cells[0][0], cells[0][1]);
       drawStation(ctx, def, x, y, o.t, o.state !== 'used');
+      break;
+    }
+    case 'planemaker': {
+      drawPlaneMaker(ctx, cells.map(([cx, cy]) => px(cx, cy)), rot, o);
+      outlineCells(ctx, cells, ax, ay, own, 0.7);
+      break;
+    }
+    case 'fan': {
+      drawFan(ctx, cells.map(([cx, cy]) => px(cx, cy)), rot, o.t);
+      outlineCells(ctx, cells, ax, ay, own, 0.7);
+      break;
+    }
+    case 'grave': {
+      const [x, y] = px(cells[0][0], cells[0][1]);
+      drawGrave(ctx, x, y, o);
+      break;
+    }
+    case 'turret': {
+      const [x, y] = px(cells[0][0], cells[0][1]);
+      drawTurret(ctx, x, y, o.aim ?? -Math.PI / 4);
+      outlineCells(ctx, cells, ax, ay, own, 0.6);
+      break;
+    }
+    case 'ice': {
+      for (const [cx, cy] of cells) { const [x, y] = px(cx, cy); drawIceCell(ctx, x, y, o.t); }
       break;
     }
     case 'bomb': {
@@ -650,6 +681,150 @@ function drawStation(ctx: CanvasRenderingContext2D, def: ItemDef, x: number, y: 
   ctx.restore();
 }
 
+// ---------------------------------------------------------------- batch-update items
+/** Paper Plane Maker: a 1x2 robot whose head (the emitter cell) folds and launches planes. */
+function drawPlaneMaker(ctx: CanvasRenderingContext2D, cellPx: (readonly [number, number])[], rot: Rot, o: ItemDrawOpts) {
+  const n = DIRS[rotDirIndex(0, rot)];
+  const key = (p: readonly [number, number]) => p[0] * n.x + p[1] * n.y;
+  const head = cellPx.reduce((a, c) => (key(c) > key(a) ? c : a));
+  const fire = rotDirIndex(o.variant === 1 ? 3 : 1, rot);
+  const fd = DIRS[fire];
+  for (const [x, y] of cellPx) {
+    const isHead = x === head[0] && y === head[1];
+    ctx.fillStyle = isHead ? '#d7dde8' : '#9aa6bc'; ctx.fillRect(x + 2, y + 2, C - 4, C - 4);
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x + 4, y + 4, C - 8, 5);
+    ctx.strokeStyle = '#3a4258'; ctx.lineWidth = 2; ctx.strokeRect(x + 2, y + 2, C - 4, C - 4);
+    if (isHead) {
+      // robot face looking the way it fires, and a slot that planes come out of
+      const cx = x + C / 2, cy = y + C / 2;
+      ctx.fillStyle = '#1f2638'; ctx.beginPath(); ctx.roundRect?.(cx - 14, cy - 9, 28, 14, 5); ctx.fill();
+      const blink = (o.t % 3) < 0.12;
+      ctx.fillStyle = '#57e6ff'; for (const ex of [-6, 6]) { ctx.beginPath(); ctx.ellipse(cx + ex + fd.x * 2, cy - 2 + fd.y * 2, 3, blink ? 0.6 : 3, 0, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = '#2b3146'; ctx.fillRect(cx + fd.x * (C / 2 - 5) - (fd.x ? 2 : 12), cy + fd.y * (C / 2 - 5) - (fd.y ? 2 : 12), fd.x ? 4 : 24, fd.y ? 4 : 24);
+      ctx.strokeStyle = '#ff9b4a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx, y + 3); ctx.lineTo(cx, y - 4); ctx.stroke();
+      ctx.fillStyle = '#ff5e8a'; ctx.beginPath(); ctx.arc(cx, y - 5, 2.5, 0, Math.PI * 2); ctx.fill();
+    } else {
+      // gears turning in the body
+      const cx = x + C / 2, cy = y + C / 2;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(o.t * 2);
+      ctx.strokeStyle = '#3a4258'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.stroke();
+      for (let i = 0; i < 6; i++) { ctx.rotate(Math.PI / 3); ctx.fillStyle = '#3a4258'; ctx.fillRect(8, -2, 5, 4); }
+      ctx.restore();
+    }
+  }
+}
+
+/** A paper plane (2x1, flying along dir). Crumpled planes are drawn by the renderer as a falling ball of paper. */
+export function drawPlane(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, dx: number, dy: number, owner: string, t: number) {
+  ctx.save();
+  ctx.translate(r.x + r.w / 2, r.y + r.h / 2);
+  ctx.rotate(Math.atan2(dy, dx));
+  const L = Math.max(r.w, r.h) / 2, T = Math.min(r.w, r.h) / 2;
+  const flap = Math.sin(t * 12) * 1.2;
+  ctx.fillStyle = '#fbfbff'; ctx.strokeStyle = '#5b6380'; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(L, 0); ctx.lineTo(-L, -T - flap); ctx.lineTo(-L * 0.55, 0); ctx.lineTo(-L, T + flap); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#dfe3f0'; ctx.beginPath(); ctx.moveTo(L, 0); ctx.lineTo(-L * 0.55, 0); ctx.lineTo(-L, T + flap); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = owner; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(L - 4, 0); ctx.lineTo(-L * 0.55, 0); ctx.stroke();
+  // a flat top edge reads as something you can stand on
+  ctx.strokeStyle = 'rgba(20,24,40,.5)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.strokeRect(-L, -T, L * 2, T * 2); ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** Fan: a solid 3x1 casing with a spinning rotor facing the wind direction. */
+function drawFan(ctx: CanvasRenderingContext2D, cellPx: (readonly [number, number])[], rot: Rot, t: number) {
+  const n = DIRS[rotDirIndex(0, rot)];
+  for (const [x, y] of cellPx) {
+    ctx.fillStyle = '#4f5a74'; ctx.fillRect(x + 1, y + 1, C - 2, C - 2);
+    ctx.fillStyle = '#6c7896'; ctx.fillRect(x + 3, y + 3, C - 6, 6);
+    ctx.strokeStyle = '#262c3c'; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, C - 2, C - 2);
+    const cx = x + C / 2, cy = y + C / 2;
+    ctx.fillStyle = '#1b2030'; ctx.beginPath(); ctx.arc(cx, cy, 17, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * 18);
+    ctx.fillStyle = '#c9d2e6';
+    for (let i = 0; i < 4; i++) { ctx.rotate(Math.PI / 2); ctx.beginPath(); ctx.ellipse(8, 0, 8, 3.5, 0.4, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+    ctx.fillStyle = '#ffd25e'; ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+    // grille bars and an arrow on the wind side
+    ctx.strokeStyle = 'rgba(200,210,230,.45)'; ctx.lineWidth = 1;
+    for (let i = -12; i <= 12; i += 6) { ctx.beginPath(); if (n.y !== 0) { ctx.moveTo(cx + i, cy - 16); ctx.lineTo(cx + i, cy + 16); } else { ctx.moveTo(cx - 16, cy + i); ctx.lineTo(cx + 16, cy + i); } ctx.stroke(); }
+    ctx.fillStyle = '#7ff0e0';
+    const ex = cx + n.x * (C / 2 - 4), ey = cy + n.y * (C / 2 - 4);
+    ctx.beginPath(); ctx.moveTo(ex + n.x * 3, ey + n.y * 3); ctx.lineTo(ex - n.y * 5 - n.x * 4, ey + n.x * 5 - n.y * 4); ctx.lineTo(ex + n.y * 5 - n.x * 4, ey - n.x * 5 - n.y * 4); ctx.fill();
+  }
+}
+
+/** Gravestone: stone, a thin dirt pile (a platform) with one coloured flower per player, ghosts drawn by the renderer. */
+function drawGrave(ctx: CanvasRenderingContext2D, x: number, y: number, o: ItemDrawOpts) {
+  const dirtY = y + C - 8;
+  // the stone
+  ctx.fillStyle = '#8b90a3'; ctx.strokeStyle = '#3c4052'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x + 12, dirtY); ctx.lineTo(x + 12, y + 16); ctx.quadraticCurveTo(x + 12, y + 5, x + 24, y + 5); ctx.quadraticCurveTo(x + 36, y + 5, x + 36, y + 16); ctx.lineTo(x + 36, dirtY); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(x + 15, y + 10, 4, dirtY - y - 12);
+  ctx.strokeStyle = '#4a4e62'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x + 24, y + 12); ctx.lineTo(x + 24, y + 28); ctx.moveTo(x + 18, y + 18); ctx.lineTo(x + 30, y + 18); ctx.stroke();
+  // dirt pile: flat on the ground, gently curved underneath when the grave floats
+  ctx.fillStyle = '#6b4a2e'; ctx.strokeStyle = '#3b2716'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x, dirtY + 8); ctx.quadraticCurveTo(x + 4, dirtY - 2, x + 24, dirtY - 2); ctx.quadraticCurveTo(x + 44, dirtY - 2, x + C, dirtY + 8);
+  if (o.floating) ctx.quadraticCurveTo(x + 24, dirtY + 15, x, dirtY + 8); else ctx.lineTo(x, dirtY + 8);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#4e9a3a'; for (let i = 0; i < 6; i++) ctx.fillRect(x + 3 + i * 8, dirtY - 2, 2, 3);
+  // flowers on the dirt: standing ones in colour, broken ones snapped and grey
+  const flowers = o.flowers ?? ['#ff5e8a', '#ffd25e', '#7aa8ff'];
+  const broken = o.broken ?? 0;
+  flowers.forEach((col, i) => {
+    const fx = x + 6 + (i + 0.5) * ((C - 12) / flowers.length), down = i < broken;
+    ctx.strokeStyle = down ? '#6d6a5e' : '#3f8a3a'; ctx.lineWidth = 1.5; ctx.beginPath();
+    if (down) { ctx.moveTo(fx, dirtY); ctx.lineTo(fx + 5, dirtY - 2); } else { ctx.moveTo(fx, dirtY); ctx.lineTo(fx, dirtY - 9); }
+    ctx.stroke();
+    ctx.fillStyle = down ? '#8a8578' : col;
+    const hx = down ? fx + 6 : fx, hy = down ? dirtY - 2 : dirtY - 10;
+    for (let k = 0; k < 4; k++) { const a = (k * Math.PI) / 2; ctx.beginPath(); ctx.arc(hx + Math.cos(a) * 2.2, hy + Math.sin(a) * 2.2, 1.8, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = '#fff3a8'; ctx.beginPath(); ctx.arc(hx, hy, 1.2, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+/** A ghost: translucent sheet with eyes; angry (red eyes, faster wobble) once it is hunting someone. */
+export function drawGhost(ctx: CanvasRenderingContext2D, x: number, y: number, t: number, angry: boolean, alpha = 1) {
+  ctx.save();
+  ctx.globalAlpha *= alpha * (angry ? 0.92 : 0.6);
+  ctx.translate(x, y + Math.sin(t * (angry ? 9 : 4)) * 2);
+  ctx.fillStyle = angry ? '#efe6ff' : '#f4f6ff';
+  ctx.beginPath(); ctx.moveTo(-11, 10); ctx.lineTo(-11, -2); ctx.arc(0, -2, 11, Math.PI, 0); ctx.lineTo(11, 10);
+  for (let i = 0; i < 4; i++) { const wx = 11 - (i + 0.5) * 5.5; ctx.quadraticCurveTo(wx, 10 + (i % 2 ? -4 : 4) * Math.sin(t * 8 + i), wx - 2.75, 10); }
+  ctx.closePath(); ctx.fill();
+  if (angry) { ctx.strokeStyle = 'rgba(170,90,255,.8)'; ctx.lineWidth = 2; ctx.stroke(); }
+  ctx.fillStyle = angry ? '#ff2a4a' : '#2a2340';
+  ctx.beginPath(); ctx.ellipse(-4, -3, 2.2, angry ? 1.6 : 3, angry ? 0.4 : 0, 0, Math.PI * 2); ctx.ellipse(4, -3, 2.2, angry ? 1.6 : 3, angry ? -0.4 : 0, 0, Math.PI * 2); ctx.fill();
+  if (angry) { ctx.fillStyle = '#2a2340'; ctx.beginPath(); ctx.ellipse(0, 4, 3, 2, 0, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+}
+
+/** Dart Turret: a solid armoured base with a swivelling barrel that tracks the closest visible player. */
+function drawTurret(ctx: CanvasRenderingContext2D, x: number, y: number, aim: number) {
+  ctx.fillStyle = '#3d5a44'; ctx.fillRect(x + 2, y + 2, C - 4, C - 4);
+  ctx.fillStyle = '#56795e'; ctx.fillRect(x + 4, y + 4, C - 8, 6);
+  ctx.strokeStyle = '#1f2e23'; ctx.lineWidth = 2; ctx.strokeRect(x + 2, y + 2, C - 4, C - 4);
+  ctx.fillStyle = '#c7d1c0'; for (const [bx, by] of [[8, 8], [C - 8, 8], [8, C - 8], [C - 8, C - 8]]) { ctx.beginPath(); ctx.arc(x + bx, y + by, 2, 0, Math.PI * 2); ctx.fill(); }
+  const cx = x + C / 2, cy = y + C / 2;
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(aim);
+  ctx.fillStyle = '#20262e'; ctx.fillRect(0, -4, 22, 8);
+  ctx.fillStyle = '#7bea5c'; ctx.fillRect(18, -2.5, 5, 5);
+  ctx.restore();
+  ctx.fillStyle = '#2b3a30'; ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#7bea5c'; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+}
+
+/** Ice: a glossy sheet along the bottom of its cell (the top of the surface it coats). */
+export function drawIceCell(ctx: CanvasRenderingContext2D, x: number, y: number, t: number) {
+  const top = y + C - 9;
+  const g = ctx.createLinearGradient(0, top, 0, y + C + 2);
+  g.addColorStop(0, 'rgba(220,250,255,.95)'); g.addColorStop(1, 'rgba(110,200,255,.85)');
+  ctx.fillStyle = g; ctx.fillRect(x, top, C, 11);
+  ctx.strokeStyle = 'rgba(40,120,180,.8)'; ctx.lineWidth = 1.2; ctx.strokeRect(x + 0.5, top + 0.5, C - 1, 10);
+  const sh = (t * 30) % (C * 3);
+  ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fillRect(x + ((sh + 6) % C), top + 2, 10, 2);
+  ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fillRect(x + 4, top + 6, 6, 1.5); ctx.fillRect(x + 28, top + 7, 9, 1.5);
+}
+
 // ---------------------------------------------------------------- kinematic platforms
 /** Shuttle Block body: teal metal deck with chevrons pointing the way it is travelling. */
 export function drawShuttleBody(ctx: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, dir: { x: number; y: number }, owner: string, t: number, ghost = false) {
@@ -726,7 +901,7 @@ export function drawCardPreview(canvas: HTMLCanvasElement, itemId: string, t = 0
   for (let x = 0; x <= showW; x++) { ctx.beginPath(); ctx.moveTo(x * C, 0); ctx.lineTo(x * C, showH * C); ctx.stroke(); }
   for (let y = 0; y <= showH; y++) { ctx.beginPath(); ctx.moveTo(0, y * C); ctx.lineTo(showW * C, y * C); ctx.stroke(); }
   const ox = Math.floor((showW - mw) / 2), oy = Math.floor((showH - mh) / 2);
-  if (def.kind === 'wire' || def.kind === 'sniper') {
+  if (def.kind === 'wire' || def.kind === 'sniper' || def.kind === 'ice') {
     // show the support block the item needs
     ctx.fillStyle = '#5b4d8f';
     for (let i = 0; i < mw; i++) ctx.fillRect((ox + i) * C, (oy + mh) * C, C, C);

@@ -1,5 +1,5 @@
 // Client state: mirrors what the server says, predicts only the local player's movement, interpolates everyone else.
-import { DT, EMOTE, HAZARD, PHYS, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config';
+import { DT, EMOTE, HAZARD, NEWITEMS, PHYS, PROTOCOL_VERSION, TICK_HZ } from '../../shared/config';
 import { laserInOff, moverRect } from '../../shared/hazards';
 import { childRect } from '../../shared/movers';
 import { getItem } from '../../shared/items';
@@ -229,7 +229,7 @@ export class GameClient {
       case 'notice': this.toast(m.msg, 'info', 4500); break;
       case 'raceStart':
         if (this.world) {
-          this.race = new RaceSim(this.world.clone(), m.ids, { roundKey: m.roundKey, maxTicks: m.maxTicks });
+          this.race = new RaceSim(this.world.clone(), m.ids, { roundKey: m.roundKey, maxTicks: m.maxTicks, humans: m.humans });
           this.roundKey = m.roundKey;
           this.snaps = []; this.spectateIdx = 0;
           this.pr = new Predictor(this.race, this.you);
@@ -266,7 +266,7 @@ export class GameClient {
     if (now - this.snapWindow > 1000) { this.stats.snapsPerSec = this.snapCount; this.snapCount = 0; this.snapWindow = now; }
     race.applySnapshot(s);
     for (const ps of s.players) { const p = race.player(ps.id); if (p) applyBodySnap(p.body, ps); }
-    race.projectiles = s.proj.map(([id, kind, x, y, vx, vy]) => ({ id, kind, owner: null, src: '', x, y, vx, vy, r: kind === 'cannon' ? HAZARD.cannonBallR : 4, age: 0, hit: [], alive: true }));
+    race.projectiles = s.proj.map(([id, kind, x, y, vx, vy]) => ({ id, kind, owner: null, src: '', x, y, vx, vy, r: kind === 'cannon' ? HAZARD.cannonBallR : kind === 'dart' ? NEWITEMS.dartR : 4, age: 0, hit: [], alive: true }));
     const me = s.players.find(p => p.id === this.you);
     if (me && this.pr) { this.pr.reconcile(s, me); this.stats.lastCorr = this.pr.stats.lastCorr; this.stats.predSteps = this.pr.stats.predSteps; }
   }
@@ -319,7 +319,7 @@ export class GameClient {
   }
 
   /** Pixel rect of a mover child at a tick (kinematic children exact, legacy ones at their mirrored pose). */
-  moverRectAt(m: SimMover, tick: number) { return m.hz ? m.rect : childRect(m.o, m.child, tick); }
+  moverRectAt(m: SimMover, tick: number) { return this.race ? this.race.moverRectAt(m, tick) : m.hz ? m.rect : childRect(m.o, m.child, tick); }
 
   private flushInputs(force: boolean) {
     const batch = this.pr?.takeBatch(force);
@@ -345,8 +345,8 @@ export class GameClient {
     if (!pa || !pb) return null;
     // a remote rider is drawn relative to their platform so they stay glued to it at our render tick
     const ride = this.race?.movers[pb.gm];
-    if (pb.g === 1 && pb.gm >= 0 && ride && !ride.hz) {
-      const then = childRect(ride.o, ride.child, b.s.tick), now = childRect(ride.o, ride.child, this.renderTick());
+    if (pb.g === 1 && pb.gm >= 0 && ride && !ride.hz && !ride.fixed) {
+      const then = this.race!.moverRectAt(ride, b.s.tick), now = this.race!.moverRectAt(ride, this.renderTick());
       return { x: pb.x - then.x + now.x, y: now.y - PHYS.bodyH, vx: pb.vx, vy: pb.vy, snap: pb };
     }
     if (b.s.tick === a.s.tick || target >= b.s.tick) {
@@ -419,7 +419,7 @@ export class GameClient {
   // ------------------------------------------------ rehearsal (local only, never scored)
   startRehearsal() {
     if (!this.world || this.phase !== 'build') return;
-    this.rehearsal = { sim: new RaceSim(this.world.clone(), [this.you || 'me'], { roundKey: 'rehearsal', maxTicks: 60 * 60 }), acc: 0, prevJump: false };
+    this.rehearsal = { sim: new RaceSim(this.world.clone(), [this.you || 'me'], { roundKey: 'rehearsal', maxTicks: 60 * 60, humans: 1 }), acc: 0, prevJump: false };
     this.onChange();
   }
   stopRehearsal() { this.rehearsal = null; this.onChange(); }

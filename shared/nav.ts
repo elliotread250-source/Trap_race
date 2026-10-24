@@ -6,6 +6,7 @@ import { circleRect, rectsOverlap, type Rect } from './grid';
 import { fieldAccel, type HoleInfo } from './field';
 import { cellCenter, moverBaseRect, ovalHitsRect, springDir, springRect, staticLethal, type StaticLethal } from './hazards';
 import { getItem } from './items';
+import { fanAccel, fanFields, graveDirt, graveStone, type FanField } from './fans';
 import { childCount, childId, childRect, motionOf, sweepOf } from './movers';
 import { IN_DOWN, IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
 import { C_ONEWAY, World, type PlacedObject } from './world';
@@ -68,6 +69,7 @@ export class Prober {
   readonly springs: { r: Rect; dir: { x: number; y: number } }[] = [];
   readonly movers: Mover[] = [];
   readonly env: PhysEnv;
+  readonly fans: FanField[];
   /** kinematic platform children, in the same order as the race sim's kinematic movers */
   readonly kin: KinChild[] = [];
   /** 1 where a kinematic platform's lane is (no standing spots there; anything crossing it is timed) */
@@ -86,11 +88,26 @@ export class Prober {
       if (k === 'blackhole') { const c = cellCenter(o.x, o.y); this.holes.push({ x: c.x, y: c.y, owner: o.owner, src: o.id }); }
       if (k === 'spring') this.springs.push({ r: springRect(o), dir: springDir(o) });
       if (k === 'moving') { const r = moverBaseRect(o); this.movers.push({ ...r, dx: 0, dy: 0 }); } // boarding point at rest
+      if (k === 'grave') {
+        this.movers.push({ ...graveDirt(o), dx: 0, dy: 0, top: true });
+        // touching the stone sets a ghost on you: routes treat it as a no-go so bots steer clear
+        this.lethal.rects.push({ r: graveStone(o), owner: o.owner, src: o.id });
+      }
     }
     const holes = this.holes;
+    this.fans = fanFields(world);
+    const fans = this.fans;
+    const holeFn = holes.length ? (b: Body) => holeAccel(world, holes, b, (a, c, d, e) => staticRayBlocked(world, a, c, d, e)) : null;
     this.env = {
       world, isSolid: (x, y) => world.solidCell(x, y), movers: this.movers, speedMul: 1, jumpMul: 1,
-      accel: holes.length ? (b: Body) => holeAccel(world, holes, b, (a, c, d, e) => staticRayBlocked(world, a, c, d, e)) : undefined,
+      accel: holeFn || fans.length ? (b: Body) => {
+        const h = holeFn ? holeFn(b) : null;
+        if (!fans.length) return h;
+        const cx = b.x + W / 2, cy = b.y + H / 2;
+        if (world.inProtectedPx(cx, cy)) return h;
+        const f = fanAccel(fans, cx, cy, b.vx, b.vy);
+        return f ? (h ? { ax: h.ax + f.ax, ay: h.ay + f.ay } : f) : h;
+      } : undefined,
     };
     this.lane = new Uint8Array(world.w * world.h);
     for (const o of world.kinematic) {

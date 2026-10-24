@@ -1,12 +1,13 @@
 // Authoritative race simulation. Pure and deterministic: the server runs it, practice mode and rehearsal run it locally.
-import { CELL, DT, HAZARD, PHYS, POWER, TICK_HZ, SCORING, MATCH } from './config';
+import { CELL, DT, HAZARD, NEWITEMS, PHYS, POWER, TICK_HZ, SCORING, MATCH } from './config';
 import { circleRect, rectsOverlap, segRect, type Rect, type Vec } from './grid';
 import { closestOnSegment, fieldAccel, traceShot, type HoleInfo, type ShotSeg } from './field';
 import {
   cellCenter, laserBeamRect, laserCells, laserInOff, laserState, launcherDir, moverPathLen, moverRect, muzzle,
   moverBaseRect, onMover, ovalHitsRect, pendulumPos, rspikeParts, rspikeState, sawPos, springDir, springRect, staticLethal, type StaticLethal,
 } from './hazards';
-import { getItem, type PowerType } from './items';
+import { getItem, PLANE_PASSES, type PowerType } from './items';
+import { fanAccel, fanDist, fanFields, ghostOrbit, graveDirt, graveStone, planeDir, planeSpawnRect, type FanField } from './fans';
 import { childCount, childId, childRect } from './movers';
 import { bodyCenter, bodyRect, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
 import { spikeStripPx, wireStripPx, type PlacedObject, type World } from './world';
@@ -33,7 +34,7 @@ export interface RacePlayer {
 }
 
 /** Sniper shots are instantaneous and never exist as travelling projectiles; 'sniper' is only a cause and a fire-event kind. */
-export type ProjKind = 'sniper' | 'cannon' | 'arrow';
+export type ProjKind = 'sniper' | 'cannon' | 'arrow' | 'dart';
 export interface Projectile { id: number; kind: ProjKind; owner: string | null; src: string; x: number; y: number; vx: number; vy: number; r: number; age: number; hit: string[]; alive: boolean }
 
 export type CoinPhase = 'origin' | 'carried' | 'dropped' | 'banked' | 'lost';
@@ -53,16 +54,38 @@ export type RaceEvent =
   | { id: string; t: number; type: 'absorb'; x: number; y: number }
   | { id: string; t: number; type: 'crumble'; obj: string; hp: number }
   | { id: string; t: number; type: 'spring'; pid: string }
-  | { id: string; t: number; type: 'jump'; pid: string; wall: boolean };
+  | { id: string; t: number; type: 'jump'; pid: string; wall: boolean }
+  /** a paper plane crumpled at (x, y); hx/hy set when a black hole sucked it in */
+  | { id: string; t: number; type: 'crumple'; x: number; y: number; dx: number; dy: number; hx?: number; hy?: number }
+  | { id: string; t: number; type: 'plane'; src: string }
+  /** a player touched a gravestone: a flower broke and a ghost now hunts them */
+  | { id: string; t: number; type: 'ghost'; grave: string; pid: string };
+
+/** A paper plane in its fixed mover slot. Velocity includes any sideways strafe from fans; t is the tick of x/y. */
+export interface Plane { slot: number; alive: boolean; x: number; y: number; w: number; h: number; vx: number; vy: number; dx: number; dy: number; t: number }
+export type GhostState = 'idle' | 'wait' | 'chase' | 'gone';
+export interface Ghost { grave: string; idx: number; state: GhostState; x: number; y: number; target: string | null; waitT: number; hits: string[] }
+export interface GraveState { o: PlacedObject; flowers: number; broken: number; ghosts: Ghost[] }
+const GHOST_STATES: GhostState[] = ['idle', 'wait', 'chase', 'gone'];
+/** where a dead plane slot parks: far off the map, zero size, so nothing can touch it */
+const OFF: Rect = { x: -100000, y: -100000, w: 0, h: 0 };
 
 interface Hz { o: PlacedObject; kind: string; phase: number; slowable: boolean; pathLen: number; beam: number }
 
-export interface SimMover { id: string; o: PlacedObject; child: number; hz: Hz | null; rect: Rect; prev: Rect }
+export interface SimMover {
+  id: string; o: PlacedObject; child: number; hz: Hz | null; rect: Rect; prev: Rect;
+  /** paper plane slot (soft: crumples rather than crushing) */
+  plane?: Plane;
+  /** a fixed, top-only platform (gravestone dirt pile) */
+  fixed?: boolean;
+  /** ice laid on this moving platform */
+  ice?: boolean;
+}
 
 /** hp counts down per interaction (new landing, new wall-slide contact, unique projectile impact); 0 means broken for the round. */
 interface CrumbleState { o: PlacedObject; rect: Rect; hp: number; broken: boolean; touch: Map<string, number>; impacts: Set<string> }
 
-export interface RaceOptions { roundKey: string; maxTicks: number; seed?: number }
+export interface RaceOptions { roundKey: string; maxTicks: number; seed?: number; /** human players in the race (gravestone flowers); defaults to everyone */ humans?: number }
 
 const W = PHYS.bodyW, H = PHYS.bodyH;
 
@@ -90,6 +113,12 @@ export class RaceSim {
   private springs: { o: PlacedObject; r: Rect }[] = [];
   /** barbed wire riding a moving platform: its strips follow the platform's displacement from its starting pose */
   moverWires: { o: PlacedObject; m: SimMover; base: Rect }[] = [];
+  fans: FanField[] = [];
+  makers: PlacedObject[] = [];
+  graves: GraveState[] = [];
+  turrets: { o: PlacedObject; cd: number }[] = [];
+  /** players who have already angered a ghost this round */
+  angered = new Set<string>();
   over = false;
 
   constructor(world: World, playerIds: string[], opts: RaceOptions) {
@@ -142,6 +171,27 @@ export class RaceSim {
       const r = childRect(o, i, 0);
       this.movers.push({ id: childId(o, i), o, child: i, hz: null, rect: r, prev: { ...r } });
     }
+    // batch-update items: paper plane slots, gravestone dirt piles, fans, turrets, ice riding moving platforms
+    const nComp = playerIds.length, nHum = Math.max(1, Math.min(nComp, opts.humans ?? nComp));
+    for (const o of world.objects.values()) {
+      const k = getItem(o.item).kind;
+      if (k === 'planemaker') {
+        this.makers.push(o);
+        for (let i = 0; i < NEWITEMS.planeSlots; i++) {
+          const plane: Plane = { slot: this.movers.length, alive: false, x: OFF.x, y: OFF.y, w: 0, h: 0, vx: 0, vy: 0, dx: 0, dy: 0, t: 0 };
+          this.movers.push({ id: `${o.id}#p${i}`, o, child: 1000 + i, hz: null, rect: { ...OFF }, prev: { ...OFF }, plane });
+        }
+      }
+      if (k === 'grave') {
+        const r = graveDirt(o);
+        this.movers.push({ id: `${o.id}#dirt`, o, child: -1, hz: null, rect: r, prev: { ...r }, fixed: true });
+        const ghosts: Ghost[] = Array.from({ length: nComp }, (_, i) => { const p = ghostOrbit(o, i, nComp, 0); return { grave: o.id, idx: i, state: 'idle' as GhostState, x: p.x, y: p.y, target: null, waitT: 0, hits: [] }; });
+        this.graves.push({ o, flowers: nHum, broken: 0, ghosts });
+      }
+      if (k === 'turret') this.turrets.push({ o, cd: 0 });
+      if (k === 'ice' && o.attach) for (const m of this.movers) if (m.o.id === o.attach && !m.plane && !m.fixed) m.ice = true;
+    }
+    this.fans = fanFields(world);
     this.lethal = staticLethal(world);
     for (const o of world.objects.values()) {
       if (getItem(o.item).kind !== 'wire') continue;
@@ -161,10 +211,19 @@ export class RaceSim {
   moversAt(tick: number, legacy?: (m: SimMover) => { rect: Rect; prev: Rect }): Mover[] {
     return this.movers.map(m => {
       let r: Rect, pr: Rect;
-      if (m.hz) { const l = legacy ? legacy(m) : { rect: m.rect, prev: m.prev }; r = l.rect; pr = l.prev; }
+      if (m.plane) { r = planeRectAt(m.plane, tick); pr = planeRectAt(m.plane, tick - 1); }
+      else if (m.fixed) { r = m.rect; pr = m.rect; }
+      else if (m.hz) { const l = legacy ? legacy(m) : { rect: m.rect, prev: m.prev }; r = l.rect; pr = l.prev; }
       else { r = childRect(m.o, m.child, tick); pr = childRect(m.o, m.child, tick - 1); }
-      return { x: r.x, y: r.y, w: r.w, h: r.h, dx: r.x - pr.x, dy: r.y - pr.y, id: m.id };
+      return { x: r.x, y: r.y, w: r.w, h: r.h, dx: r.x - pr.x, dy: r.y - pr.y, id: m.id, soft: !!m.plane, top: !!m.fixed, ice: !!m.ice };
     });
+  }
+
+  /** Where a mover is drawn or tested at a tick (kinematic bodies exactly, planes extrapolated, the rest as mirrored). */
+  moverRectAt(m: SimMover, tick: number): Rect {
+    if (m.plane) return planeRectAt(m.plane, tick);
+    if (m.fixed || m.hz) return m.rect;
+    return childRect(m.o, m.child, tick);
   }
 
   get time() { return this.tick / TICK_HZ; }
@@ -188,7 +247,7 @@ export class RaceSim {
   };
 
   moverList(): Mover[] {
-    return this.movers.map(m => ({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h, dx: m.rect.x - m.prev.x, dy: m.rect.y - m.prev.y, id: m.id }));
+    return this.movers.map(m => ({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h, dx: m.rect.x - m.prev.x, dy: m.rect.y - m.prev.y, id: m.id, soft: !!m.plane, top: !!m.fixed, ice: !!m.ice }));
   }
 
   /** Physics environment for one player (shared with client prediction). */
@@ -197,8 +256,19 @@ export class RaceSim {
       world: this.world, isSolid: this.isSolid, movers,
       speedMul: p.effects.speed > 0 ? POWER.speedMul : 1,
       jumpMul: p.effects.jump > 0 ? POWER.jumpMul : 1,
-      accel: this.holes.length ? (b: Body) => this.holePull(b, p) : undefined,
+      accel: this.holes.length || this.fans.length ? (b: Body) => this.fieldPull(b, p) : undefined,
     };
+  }
+
+  /** Black holes plus fan wind on a player's body. */
+  fieldPull(b: Body, p: RacePlayer | null): { ax: number; ay: number } | null {
+    const h = this.holes.length ? this.holePull(b, p) : null;
+    if (!this.fans.length) return h;
+    const c = bodyCenter(b);
+    if (this.world.inProtectedPx(c.x, c.y)) return h;
+    const f = fanAccel(this.fans, c.x, c.y, b.vx, b.vy);
+    if (!f) return h;
+    return h ? { ax: h.ax + f.ax, ay: h.ay + f.ay } : f;
   }
 
   /** Black hole attraction (see field.ts): softened falloff, occlusion by solids, capped, ignored in protected zones. */
@@ -241,6 +311,7 @@ export class RaceSim {
     }
     let viaCell = best >= 0;
     for (const m of this.movers) {
+      if (m.plane || m.fixed) continue; // planes are handled by the projectile code; dirt piles never stop a shot
       // relative motion: test the segment in the platform's frame so fast shots and moving bodies never tunnel
       const mt = segRect(x0 + (m.rect.x - m.prev.x), y0 + (m.rect.y - m.prev.y), x1, y1, m.rect);
       if (mt >= 0 && (best < 0 || mt < best)) { best = mt; viaCell = false; }
@@ -269,10 +340,12 @@ export class RaceSim {
         h.phase += DT * (laserInOff(h.phase) ? slow : 1);
       } else h.phase += DT * (h.slowable ? slow : 1);
     }
-    for (const m of this.movers) { m.prev = m.rect; m.rect = m.hz ? moverRect(m.o, m.hz.phase, m.hz.pathLen) : childRect(m.o, m.child, this.tick); }
+    for (const m of this.movers) { if (m.plane || m.fixed) continue; m.prev = m.rect; m.rect = m.hz ? moverRect(m.o, m.hz.phase, m.hz.pathLen) : childRect(m.o, m.child, this.tick); }
+    this.updatePlanes();
     const movers = this.moverList();
 
     this.fireLaunchers(slow);
+    this.fireTurrets();
 
     // movement
     for (const p of this.players) {
@@ -289,6 +362,8 @@ export class RaceSim {
       if (p.springCd > 0) p.springCd -= DT;
     }
 
+    this.landOnPlanes();
+    this.updateGhosts();
     this.updateCrumbles();
     this.updateSprings();
     this.updateProjectiles();
@@ -325,6 +400,165 @@ export class RaceSim {
       const r = kind === 'cannon' ? HAZARD.cannonBallR : 4;
       this.projectiles.push({ id: this.projSeq++, kind, owner: h.o.owner, src: h.o.id, x: m.x, y: m.y, vx: d.x * speed, vy: d.y * speed, r, age: 0, hit: [], alive: true });
       this.emit({ id: `${this.opts.roundKey}:f:${h.o.id}:${this.tick}`, t: this.tick, type: 'fire', src: h.o.id, kind });
+    }
+  }
+
+  // ---- paper planes: fixed mover slots per maker, so mover indices never shift under riders
+  private planeSlots(o: PlacedObject) { return this.movers.filter(m => m.plane && m.o.id === o.id); }
+
+  private updatePlanes() {
+    if (!this.makers.length) return;
+    // launch on an exact cadence from GO, like the other launchers
+    if (this.tick % Math.round(NEWITEMS.planeInterval * TICK_HZ) === 0) for (const o of this.makers) {
+      const r = planeSpawnRect(o);
+      if (this.world.inProtectedPx(r.x + r.w / 2, r.y + r.h / 2)) continue;
+      const slot = this.planeSlots(o).find(m => !m.plane!.alive);
+      if (!slot) continue;
+      const d = planeDir(o), p = slot.plane!;
+      Object.assign(p, { alive: true, x: r.x, y: r.y, w: r.w, h: r.h, vx: d.x * NEWITEMS.planeSpeed, vy: d.y * NEWITEMS.planeSpeed, dx: d.x, dy: d.y, t: this.tick });
+      slot.rect = { ...r }; slot.prev = { ...r };
+      this.emit({ id: `${this.opts.roundKey}:pl:${o.id}:${this.tick}`, t: this.tick, type: 'plane', src: o.id });
+    }
+    const alive = this.movers.filter(m => m.plane?.alive);
+    for (const m of alive) {
+      const p = m.plane!;
+      if (!p.alive || p.t === this.tick) continue; // crumpled by another plane this tick, or launched this tick
+      // fans: wind across the flight path makes it strafe; flying straight into the wind crumples it close to the fan
+      let sx = 0, sy = 0;
+      const cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+      for (const f of this.fans) {
+        const d = fanDist(f, cx, cy);
+        if (d === null) continue;
+        const dot = f.dir.x * p.dx + f.dir.y * p.dy;
+        if (dot < -0.5) { if (d <= NEWITEMS.planeHeadwindCells * CELL) { this.crumplePlane(m); break; } }
+        else if (Math.abs(dot) < 0.5) { sx = f.dir.x * NEWITEMS.planeStrafe; sy = f.dir.y * NEWITEMS.planeStrafe; }
+      }
+      if (!p.alive) continue;
+      // within 4.5 cells of a black hole it is crumpled and sucked in
+      const hole = this.holes.find(h => Math.hypot(h.x - cx, h.y - cy) <= NEWITEMS.planeHoleCrumple);
+      if (hole) { this.crumplePlane(m, hole); continue; }
+      const vx = p.dx * NEWITEMS.planeSpeed + sx, vy = p.dy * NEWITEMS.planeSpeed + sy;
+      const next: Rect = { x: p.x + vx * DT, y: p.y + vy * DT, w: p.w, h: p.h };
+      if (this.planeBlocked(m, next)) { this.crumplePlane(m); continue; }
+      m.prev = m.rect; m.rect = next;
+      p.x = next.x; p.y = next.y; p.vx = vx; p.vy = vy; p.t = this.tick;
+    }
+  }
+
+  /** Would a plane at `r` hit something that crumples it: a solid, an object, a moving body, a blade, a player, the map edge? */
+  private planeBlocked(m: SimMover, r: Rect): boolean {
+    const w = this.world;
+    if (r.x < 0 || r.y < 0 || r.x + r.w > w.w * CELL || r.y + r.h > w.h * CELL) return true;
+    if (w.protectedPx.some(z => rectsOverlap(z, r))) return true;
+    const x0 = Math.floor(r.x / CELL), x1 = Math.floor((r.x + r.w - 0.01) / CELL), y0 = Math.floor(r.y / CELL), y1 = Math.floor((r.y + r.h - 0.01) / CELL);
+    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
+      if (this.isSolid(cx, cy)) return true;
+      const id = w.occAt(cx, cy);
+      if (!id || id === m.o.id) continue;
+      const o = id === 'terrain' ? null : w.objects.get(id);
+      if (!o) continue;
+      if (!PLANE_PASSES.has(getItem(o.item).kind)) return true;
+    }
+    for (const other of this.movers) {
+      if (other === m || other.fixed) continue;
+      if (other.plane && !other.plane.alive) continue;
+      if (rectsOverlap(other.rect, r)) { if (other.plane) this.crumplePlane(other); return true; }
+    }
+    for (const h of this.hz) {
+      if (h.kind === 'saw') { const sp = sawPos(h.o, h.phase); if (circleRect(sp.x, sp.y, HAZARD.sawR, r)) return true; }
+      if (h.kind === 'pendulum') { const b = pendulumPos(h.o, h.phase).ball; if (circleRect(b.x, b.y, HAZARD.pendulumBallR, r)) return true; }
+    }
+    // a player in the way (its nose included); riders on top never count because they only touch its top edge
+    const tol = 0.5;
+    for (const pl of this.players) {
+      if (pl.status !== 'racing') continue;
+      const b = pl.body;
+      if (b.x < r.x + r.w - tol && b.x + W > r.x + tol && b.y < r.y + r.h - tol && b.y + H > r.y + tol) return true;
+    }
+    return false;
+  }
+
+  crumplePlane(m: SimMover, hole?: HoleInfo) {
+    const p = m.plane!;
+    if (!p.alive) return;
+    p.alive = false;
+    this.emit({ id: `${this.opts.roundKey}:cp:${m.id}:${this.tick}`, t: this.tick, type: 'crumple', x: p.x + p.w / 2, y: p.y + p.h / 2, dx: p.dx, dy: p.dy, hx: hole?.x, hy: hole?.y });
+    p.x = OFF.x; p.y = OFF.y; p.w = 0; p.h = 0; p.vx = 0; p.vy = 0;
+    m.rect = { ...OFF }; m.prev = { ...OFF };
+  }
+
+  /** Landing on a plane that is flying upward crumples it; downward planes carry their rider down. */
+  private landOnPlanes() {
+    for (const pl of this.players) {
+      if (pl.status !== 'racing' || !pl.body.grounded || pl.body.groundMover < 0) continue;
+      const m = this.movers[pl.body.groundMover];
+      if (m?.plane?.alive && m.plane.dy < 0) this.crumplePlane(m);
+    }
+  }
+
+  // ---- dart turrets: aim at the closest visible player within 6 cells
+  private fireTurrets() {
+    for (const t of this.turrets) {
+      if (t.cd > 0) { t.cd -= DT; if (t.cd > 0) continue; }
+      const c = cellCenter(t.o.x, t.o.y);
+      let best: { d: number; ux: number; uy: number } | null = null;
+      for (const pl of this.players) {
+        if (pl.status !== 'racing') continue;
+        const pc = bodyCenter(pl.body);
+        const d = Math.hypot(pc.x - c.x, pc.y - c.y);
+        if (d > NEWITEMS.turretRange || d < 1 || (best && d >= best.d)) continue;
+        const ux = (pc.x - c.x) / d, uy = (pc.y - c.y) / d;
+        const k = (CELL / 2 + 2) / Math.max(Math.abs(ux), Math.abs(uy));
+        const mx = c.x + ux * k, my = c.y + uy * k;
+        const hit = this.rayHitT(mx, my, pc.x, pc.y);
+        if (hit >= 0 && hit < 1) continue; // a wall is in the way: it can't see them
+        best = { d, ux, uy };
+      }
+      if (!best) { t.cd = 0; continue; }
+      const k = (CELL / 2 + 2) / Math.max(Math.abs(best.ux), Math.abs(best.uy));
+      const mx = c.x + best.ux * k, my = c.y + best.uy * k;
+      if (this.world.inProtectedPx(mx, my) || this.projectiles.length >= MATCH.maxProjectiles) { t.cd = 0; continue; }
+      t.cd = NEWITEMS.turretInterval;
+      this.projectiles.push({ id: this.projSeq++, kind: 'dart', owner: t.o.owner, src: t.o.id, x: mx, y: my, vx: best.ux * NEWITEMS.dartSpeed, vy: best.uy * NEWITEMS.dartSpeed, r: NEWITEMS.dartR, age: 0, hit: [], alive: true });
+      this.emit({ id: `${this.opts.roundKey}:f:${t.o.id}:${this.tick}`, t: this.tick, type: 'fire', src: t.o.id, kind: 'dart' });
+    }
+  }
+
+  // ---- gravestones and their ghosts
+  private updateGhosts() {
+    if (!this.graves.length) return;
+    const time = this.tick / TICK_HZ;
+    for (const pl of this.players) {
+      if (pl.status !== 'racing' || this.angered.has(pl.id)) continue;
+      const br = bodyRect(pl.body);
+      for (const g of this.graves) {
+        if (!rectsOverlap(br, graveStone(g.o))) continue;
+        const ghost = g.ghosts.find(x => x.state === 'idle');
+        if (!ghost) continue;
+        this.angered.add(pl.id);
+        if (g.broken < g.flowers) g.broken++;
+        ghost.state = 'wait'; ghost.waitT = NEWITEMS.ghostWait; ghost.target = pl.id;
+        this.emit({ id: `${this.opts.roundKey}:gh:${g.o.id}:${pl.id}`, t: this.tick, type: 'ghost', grave: g.o.id, pid: pl.id });
+        break;
+      }
+    }
+    for (const g of this.graves) for (const gh of g.ghosts) {
+      if (gh.state === 'idle') { const p = ghostOrbit(g.o, gh.idx, g.ghosts.length, time); gh.x = p.x; gh.y = p.y; continue; }
+      if (gh.state === 'gone') continue;
+      const target = gh.target ? this.player(gh.target) : undefined;
+      // the ghost gives up once its target is out of the race (finished, dead or out of time)
+      if (!target || target.status !== 'racing') { gh.state = 'gone'; continue; }
+      if (gh.state === 'wait') { gh.waitT -= DT; if (gh.waitT <= 0) gh.state = 'chase'; continue; }
+      // straight through walls, unaffected by projectiles, holes, fans and the slow pulse
+      const tc = bodyCenter(target.body);
+      const dx = tc.x - gh.x, dy = tc.y - gh.y, d = Math.hypot(dx, dy);
+      const step = NEWITEMS.ghostSpeed * DT;
+      if (d > step) { gh.x += (dx / d) * step; gh.y += (dy / d) * step; } else { gh.x = tc.x; gh.y = tc.y; }
+      for (const pl of this.players) {
+        if (pl.status !== 'racing' || !circleRect(gh.x, gh.y, NEWITEMS.ghostR, bodyRect(pl.body))) continue;
+        if (pl.id === gh.target) { this.lethalHit(pl, g.o.owner, 'ghost', g.o.id); gh.state = 'gone'; break; }
+        if (!gh.hits.includes(pl.id)) { gh.hits.push(pl.id); this.lethalHit(pl, g.o.owner, 'ghost', g.o.id); }
+      }
     }
   }
 
@@ -392,6 +626,11 @@ export class RaceSim {
           if (after > limit) { pr.vx *= limit / after; pr.vy *= limit / after; }
         }
       }
+      // fans push projectiles along their wind (a share of the force players feel)
+      if (this.fans.length && !this.world.inProtectedPx(pr.x, pr.y)) {
+        const f = fanAccel(this.fans, pr.x, pr.y, pr.vx, pr.vy, NEWITEMS.fanProjectileMul, false);
+        if (f) { pr.vx += f.ax * DT; pr.vy += f.ay * DT; }
+      }
       const x1 = pr.x + pr.vx * DT, y1 = pr.y + pr.vy * DT;
       const ray = this.rayHit(pr.x, pr.y, x1, y1);
       let tBlock = ray.t, blockCell: [number, number] | null = ray.cx >= 0 ? [ray.cx, ray.cy] : null;
@@ -406,6 +645,14 @@ export class RaceSim {
         if (c.d <= HAZARD.holeCore + pr.r * 0.5 && (!absorbed || c.t < absorbed.t)) absorbed = { t: c.t, hole: h };
       }
       if (absorbed && (tBlock < 0 || absorbed.t < tBlock)) { tBlock = absorbed.t; blockCell = null; } else absorbed = null;
+      // a paper plane in the way crumples, and the projectile goes with it
+      let planeHit: SimMover | null = null;
+      for (const m of this.movers) {
+        if (!m.plane?.alive) continue;
+        const r = m.rect;
+        const tp = segRect(pr.x, pr.y, x1, y1, { x: r.x - pr.r, y: r.y - pr.r, w: r.w + pr.r * 2, h: r.h + pr.r * 2 });
+        if (tp >= 0 && (tBlock < 0 || tp < tBlock)) { tBlock = tp; blockCell = null; absorbed = null; planeHit = m; }
+      }
       const limit = tBlock < 0 ? 1 : tBlock;
       // players along the path, earliest first; nothing behind a block is reachable
       const hits: { p: RacePlayer; t: number }[] = [];
@@ -420,9 +667,11 @@ export class RaceSim {
       for (const h of hits) {
         pr.hit.push(h.p.id);
         this.lethalHit(h.p, pr.owner, pr.kind, pr.src);
+        if (pr.kind === 'dart') continue; // darts pierce players and keep going
         stopT = h.t; break; // arrows break and cannonballs stop on the first player
       }
       if (stopT >= 0) { pr.x += (x1 - pr.x) * stopT; pr.y += (y1 - pr.y) * stopT; pr.alive = false; continue; }
+      if (planeHit) { this.crumplePlane(planeHit); pr.x += (x1 - pr.x) * tBlock; pr.y += (y1 - pr.y) * tBlock; pr.alive = false; continue; }
       if (tBlock >= 0) {
         pr.x += (x1 - pr.x) * tBlock; pr.y += (y1 - pr.y) * tBlock; pr.alive = false;
         if (absorbed) this.emit({ id: `${this.opts.roundKey}:ab:${pr.id}`, t: this.tick, type: 'absorb', x: absorbed.hole.x, y: absorbed.hole.y });
@@ -464,6 +713,8 @@ export class RaceSim {
       }
       found.sort((a, b) => a.t - b.t);
       for (const f of found) { hit.add(f.p.id); this.lethalHit(f.p, o.owner, 'sniper', o.id); } // pierces players
+      // sniper rounds pass straight through paper planes, crumpling them
+      for (const m of this.movers) if (m.plane?.alive) { const tp = segRect(ax, ay, bx, by, m.rect); if (tp >= 0 && tp <= limit) this.crumplePlane(m); }
       if (tBlock < 0) return { stop: false, ex: bx, ey: by };
       if (cell) {
         const owner = this.world.collObj[this.world.idx(cell[0], cell[1])];
@@ -575,6 +826,7 @@ export class RaceSim {
       if (p.status !== 'racing') continue;
       if (!rectsOverlap(bodyRect(p.body), f)) continue;
       p.status = 'finished'; p.finishTick = this.tick;
+      for (const g of this.graves) for (const gh of g.ghosts) if (gh.target === p.id && gh.state !== 'idle') gh.state = 'gone'; // reaching the flag loses the ghost
       this.emit({ id: `${this.opts.roundKey}:finish:${p.id}`, t: this.tick, type: 'finish', pid: p.id, tick: this.tick });
       for (const id of p.coins) {
         const coin = this.coins.find(k => k.id === id);
@@ -636,6 +888,9 @@ export class RaceSim {
       pick: this.pickups.filter(p => !p.available).map(p => p.id),
       crumble: [...this.crumbles.values()].filter(c => c.hp < HAZARD.crumbleHits).map(c => [c.o.id, c.hp] as [string, number]),
       hz: this.hz.map(h => r3(h.phase)),
+      pl: this.movers.filter(m => m.plane?.alive).map(m => [m.plane!.slot, r1(m.plane!.x), r1(m.plane!.y), r1(m.plane!.vx), r1(m.plane!.vy), m.plane!.dx, m.plane!.dy] as PlaneSnap),
+      gh: this.graves.flatMap(g => g.ghosts.filter(x => x.state !== 'idle').map(x => [g.o.id, x.idx, GHOST_STATES.indexOf(x.state), r1(x.x), r1(x.y), x.target ?? ''] as GhostSnap)),
+      gb: this.graves.filter(g => g.broken > 0).map(g => [g.o.id, g.broken] as [string, number]),
     };
   }
 
@@ -645,8 +900,31 @@ export class RaceSim {
     this.slowTicks = s.slow;
     s.hz.forEach((ph, i) => { if (this.hz[i]) this.hz[i].phase = ph; });
     for (const m of this.movers) {
+      if (m.plane || m.fixed) continue;
       if (m.hz) { m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); m.prev = { ...m.rect }; }
       else { m.rect = childRect(m.o, m.child, this.tick); m.prev = childRect(m.o, m.child, this.tick - 1); }
+    }
+    // paper planes: every slot not in the snapshot is empty
+    const live = new Map((s.pl ?? []).map(p => [p[0], p]));
+    for (const m of this.movers) {
+      if (!m.plane) continue;
+      const ps = live.get(m.plane.slot);
+      const p = m.plane;
+      if (!ps) { p.alive = false; m.rect = { ...OFF }; m.prev = { ...OFF }; continue; }
+      const horiz = ps[5] !== 0;
+      Object.assign(p, { alive: true, x: ps[1], y: ps[2], vx: ps[3], vy: ps[4], dx: ps[5], dy: ps[6], t: s.tick, w: horiz ? NEWITEMS.planeLen : NEWITEMS.planeThick, h: horiz ? NEWITEMS.planeThick : NEWITEMS.planeLen });
+      m.rect = planeRectAt(p, s.tick); m.prev = planeRectAt(p, s.tick - 1);
+    }
+    // ghosts and flowers
+    const ghs = new Map((s.gh ?? []).map(g => [`${g[0]}#${g[1]}`, g]));
+    const broken = new Map(s.gb ?? []);
+    for (const g of this.graves) {
+      g.broken = broken.get(g.o.id) ?? 0;
+      for (const gh of g.ghosts) {
+        const x = ghs.get(`${g.o.id}#${gh.idx}`);
+        if (!x) { gh.state = 'idle'; gh.target = null; continue; }
+        gh.state = GHOST_STATES[x[2]]; gh.x = x[3]; gh.y = x[4]; gh.target = x[5] || null;
+      }
     }
     const dmg = new Map(s.crumble);
     for (const c of this.crumbles.values()) { c.hp = dmg.get(c.o.id) ?? HAZARD.crumbleHits; c.broken = c.hp <= 0; }
@@ -666,6 +944,13 @@ export class RaceSim {
   }
 }
 
+/** A plane's rect at a tick, extrapolated from its last known state (straight flight between snapshots). */
+export function planeRectAt(p: Plane, tick: number): Rect {
+  if (!p.alive) return { ...OFF };
+  const k = (tick - p.t) / TICK_HZ;
+  return { x: p.x + p.vx * k, y: p.y + p.vy * k, w: p.w, h: p.h };
+}
+
 export function applyBodySnap(b: Body, ps: PlayerSnap) {
   b.x = ps.x; b.y = ps.y; b.vx = ps.vx; b.vy = ps.vy; b.facing = ps.f; b.grounded = ps.g === 1; b.wallDir = ps.wd; b.wallSliding = ps.ws === 1;
   b.wallJumpReady = ps.wr === 1; b.coyote = ps.co; b.jumpBuf = ps.jb; b.prevJump = ps.pj === 1; b.jumpRising = ps.jr === 1;
@@ -677,6 +962,10 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 const r3 = (v: number) => Math.round(v * 10000) / 10000;
 
 export type ProjSnap = [number, ProjKind, number, number, number, number];
+/** slot, x, y, vx, vy, dir x, dir y */
+export type PlaneSnap = [number, number, number, number, number, number, number];
+/** grave id, ghost index, state index, x, y, target id ('' none) */
+export type GhostSnap = [string, number, number, number, number, string];
 export interface PlayerSnap {
   id: string; x: number; y: number; vx: number; vy: number; st: PlayerStatus; f: number; g: number; wd: number; ws: number; wr: number;
   co: number; jb: number; pj: number; jr: number; at: number; ad: number; lt: number; dt: number; gm: number;
@@ -686,4 +975,5 @@ export interface RaceSnapshot {
   tick: number; slow: number; players: PlayerSnap[]; proj: ProjSnap[];
   coins: { id: string; s: CoinPhase; x: number; y: number; c: string | null }[];
   pick: string[]; crumble: [string, number][]; hz: number[];
+  pl?: PlaneSnap[]; gh?: GhostSnap[]; gb?: [string, number][];
 }

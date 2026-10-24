@@ -185,7 +185,7 @@ describe('large maps with six players', () => {
         if (!m.courseOpen && opened < 0) scoutRaces++;
         else if (opened < 0) opened = m.round;
         // every race starts every moving platform at its GO pose
-        for (const mv of m.race.movers) if (!mv.hz) expect(mv.prev).toEqual(childRect(mv.o, mv.child, 0));
+        for (const mv of m.race.movers) if (!mv.hz && !mv.plane && !mv.fixed) expect(mv.prev).toEqual(childRect(mv.o, mv.child, 0));
       }
       room.tick();
     }

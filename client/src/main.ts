@@ -59,7 +59,8 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
       if (ex) { dx = ex.dx ?? dx; dy = ex.dy ?? dy; ry = ex.ry ?? ry; }
       if (d.cause === 'fall' || d.cause === 'pull-fall') ry = mh - 30;
       renderer.addDeath({ cause: d.cause, x: d.x, y: Math.min(by, mh - 20), color: colorOf(d.pid), skin: game.member(d.pid)?.skin ?? 0, dx, dy, rx, ry });
-      if (d.pid === game.you) game.toast(d.cause === 'crush' ? (d.credit ? `Crushed by ${game.member(d.credit)?.name ?? 'a'}'s platform` : 'Crushed!') : d.credit ? `Eliminated by ${game.member(d.credit)?.name ?? 'a trap'}'s trap` : d.cause === 'fall' ? 'You fell!' : 'Eliminated', 'bad');
+      const how: Record<string, string> = { crush: 'Crushed', drown: 'You drowned', tsunami: 'Swept away by the tsunami', ghost: 'The ghost got you', dart: 'Darted', lava: 'Burned in the lava', geyser: 'Blasted by a geyser', fall: 'You fell!' };
+      if (d.pid === game.you) game.toast(d.credit ? `${how[d.cause] ?? 'Eliminated'} by ${game.member(d.credit)?.name ?? 'a'}'s ${d.cause === 'crush' ? 'platform' : 'trap'}` : how[d.cause] ?? 'Eliminated', 'bad');
       else if (d.credit === game.you) game.toast(`Your ${d.cause === 'crush' ? 'platform crushed' : 'trap got'} ${game.member(d.pid)?.name}! +${fmtPts(SCORING.trapElim)}`, 'good');
       break;
     }
@@ -91,6 +92,14 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
       break;
     }
     case 'emote': sfx.click(); break;
+    case 'crumple': { const c = e as Extract<RaceEvent, { type: 'crumple' }>; sfx.crumple(); renderer.addCrumple(c.x, c.y, c.hx, c.hy); break; }
+    case 'plane': break;
+    case 'ghost': {
+      const gh = e as Extract<RaceEvent, { type: 'ghost' }>;
+      sfx.deathBy('ghost');
+      if (gh.pid === game.you) game.toast('A ghost is coming for you! Reach the flag to lose it', 'bad', 3500);
+      break;
+    }
     case 'shot': renderer.addTracer((e as Extract<RaceEvent, { type: 'shot' }>).pts); break;
     case 'absorb': { const a = e as Extract<RaceEvent, { type: 'absorb' }>; renderer.burst(a.x, a.y, 8, '#ff3bd0', 90, 0, 2.5); break; }
     case 'crumble': {

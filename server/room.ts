@@ -353,6 +353,7 @@ export class Match {
   }
 
   get now() { return this.room.timeMs; }
+  humanCount() { return Math.max(1, this.roster.filter(id => !this.isBot(id)).length); }
   isBot(id: string) { return !!this.room.member(id)?.bot; }
 
   begin() { this.startDraft(); }
@@ -375,7 +376,7 @@ export class Match {
     r.send(id, { t: 'world', world: this.world.toJSON() });
     if (this.phase === 'draft' || this.phase === 'build') r.send(id, this.draftMsg());
     if (this.race && (this.phase === 'race' || this.phase === 'countdown')) {
-      r.send(id, { t: 'raceStart', ids: this.race.players.map(p => p.id), roundKey: this.roundKey, maxTicks: this.race.opts.maxTicks });
+      r.send(id, { t: 'raceStart', ids: this.race.players.map(p => p.id), roundKey: this.roundKey, maxTicks: this.race.opts.maxTicks, humans: this.humanCount() });
       r.send(id, { t: 'snap', s: this.race.snapshot(this.acks()), ev: [] });
     }
     if (this.phase === 'results' && this.results.length) r.send(id, { t: 'results', round: this.round, rows: this.results[this.results.length - 1], competitive: this.competitive });
@@ -567,7 +568,7 @@ export class Match {
     // Large maps scale the base race length (90 s by default) by their measured need; test hooks shorten both together.
     const fullS = (TIMERS.raceMs / 1000) * ((this.world.map.raceS ?? 90) / 90);
     const raceS = this.courseOpen || !this.world.map.buildRequired ? fullS : Math.min(TIMERS.scoutS, fullS);
-    this.race = new RaceSim(this.world, this.roster, { roundKey: this.roundKey, maxTicks: Math.round(raceS * TICK_HZ) });
+    this.race = new RaceSim(this.world, this.roster, { roundKey: this.roundKey, maxTicks: Math.round(raceS * TICK_HZ), humans: this.humanCount() });
     for (const id of this.roster) {
       const m = this.room.member(id);
       if (m && !m.connected) this.race.setConnected(id, false);
@@ -581,7 +582,7 @@ export class Match {
     }
     this.allEvents = [];
     this.setPhase('countdown', TIMERS.countdownMs);
-    this.room.broadcast({ t: 'raceStart', ids: this.roster, roundKey: this.roundKey, maxTicks: this.race.opts.maxTicks });
+    this.room.broadcast({ t: 'raceStart', ids: this.roster, roundKey: this.roundKey, maxTicks: this.race.opts.maxTicks, humans: this.humanCount() });
     this.room.broadcast({ t: 'snap', s: this.race.snapshot(this.acks()), ev: [] });
   }
 

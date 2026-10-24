@@ -13,7 +13,9 @@ import { fieldAccel, segmentTouchesField, traceShot, type HoleInfo, type ShotSeg
 import { staticRayBlocked } from '../../shared/nav';
 import type { PlaceCheck } from '../../shared/placement';
 import { NavGraph } from '../../shared/nav';
-import { drawBlackHole, drawCharacter, drawCoinShape, drawGondola, drawItem, drawShuttleBody, drawWheelHub, PLAYER_COLORS, type AnimState } from './art';
+import { drawBlackHole, drawCharacter, drawCoinShape, drawGhost, drawGondola, drawIceCell, drawItem, drawPlane, drawShuttleBody, drawWheelHub, PLAYER_COLORS, type AnimState } from './art';
+import { fanField, ghostOrbit, planeDir, planeSpawnRect, type FanField } from '../../shared/fans';
+import { NEWITEMS } from '../../shared/config';
 import { drawAmbient, drawSceneryBackground, hasScenery, paintSceneryTerrain, type ViewInfo } from './scenery';
 import { childCount, childRect, isKinematic, newMotion, pivotPx, referenceRects, shuttleDir, sweepOf, wheelAngle } from '../../shared/movers';
 import type { GameClient } from './game';
@@ -102,6 +104,16 @@ export class Renderer {
     if (this.deaths.length > 16) this.deaths.shift();
   }
   /** a broken crumbling platform: chunks of the whole thing tumble away */
+  /** a crumpled paper plane: a ball of paper and scraps that fall away, or get sucked into a black hole */
+  addCrumple(x: number, y: number, hx?: number, hy?: number) {
+    const n = Math.round(10 * this.particleBudget()) + 2;
+    for (let i = 0; i < n; i++) {
+      const toHole = hx !== undefined && hy !== undefined;
+      const vx = toHole ? (hx! - x) * 2.2 + (Math.random() - 0.5) * 40 : (Math.random() - 0.5) * 140;
+      const vy = toHole ? (hy! - y) * 2.2 + (Math.random() - 0.5) * 40 : -80 - Math.random() * 80;
+      this.particles.push({ x, y, vx, vy, life: 0, max: 0.5 + Math.random() * 0.5, color: i % 3 ? '#f4f6ff' : '#c8cde0', size: i === 0 ? 14 : 4 + Math.random() * 5, grav: toHole ? 0 : 900 });
+    }
+  }
   addDebris(cells: [number, number][], color: string) {
     for (const [x, y] of cells) for (let i = 0; i < 4; i++) {
       this.particles.push({ x: x * C + 8 + Math.random() * 32, y: y * C + 8 + Math.random() * 32, vx: (Math.random() - 0.5) * 120, vy: -60 - Math.random() * 80, life: 0, max: 0.9 + Math.random() * 0.4, color, size: 8 + Math.random() * 8, grav: 900 });
@@ -386,6 +398,46 @@ export class Renderer {
         continue;
       }
       if (def.kind === 'crumble' && broken.has(o.id)) continue; // the whole platform has fallen away for the rest of the round
+      if (def.kind === 'fan') this.drawWind(world, o, t);
+      if (def.kind === 'grave') {
+        const gs = sim?.graves.find(x => x.o.id === o.id);
+        const n = gs ? gs.flowers : Math.max(1, g.room?.members.filter(m => !m.bot && !m.spectator).length ?? 1);
+        const flowers = Array.from({ length: n }, (_, i) => PLAYER_COLORS[(i * 3 + 2) % PLAYER_COLORS.length]);
+        drawItem(ctx, def, o.cells, 0, 0, o.rot, { owner: col, t, flowers, broken: gs?.broken ?? 0, floating: !world.solidCell(o.x, o.y + 1) && world.coll[world.idx(o.x, o.y + 1)] === 0 });
+        // ghosts still circling their grave (hunting ones are drawn with the players)
+        const total = gs ? gs.ghosts.length : Math.max(1, g.room?.members.filter(m => !m.spectator).length ?? 1);
+        for (let i = 0; i < total; i++) {
+          if (gs && gs.ghosts[i].state !== 'idle') continue;
+          const p = ghostOrbit(o, i, total, sim ? sim.tick / TICK_HZ : t);
+          drawGhost(ctx, p.x, p.y, t + i, false, 0.8);
+        }
+        continue;
+      }
+      if (def.kind === 'turret') {
+        // the barrel tracks the closest visible player within range (visual; the server decides who it shoots)
+        let aim = -Math.PI / 4;
+        if (sim) {
+          const c = cellCenter(o.x, o.y);
+          let best = NEWITEMS.turretRange;
+          for (const p of sim.players) { if (p.status !== 'racing') continue; const b = p.id === g.you && g.pred ? g.pred : p.body; const d = Math.hypot(b.x + BW / 2 - c.x, b.y + BH / 2 - c.y); if (d < best) { best = d; aim = Math.atan2(b.y + BH / 2 - c.y, b.x + BW / 2 - c.x); } }
+        }
+        drawItem(ctx, def, o.cells, 0, 0, o.rot, { owner: col, t, aim });
+        if (g.phase === 'build' || g.phase === 'draft') { const c = cellCenter(o.x, o.y); ctx.save(); ctx.strokeStyle = 'rgba(123,234,92,.35)'; ctx.setLineDash([5, 7]); ctx.beginPath(); ctx.arc(c.x, c.y, NEWITEMS.turretRange, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+        if (demo && targets.has(o.id)) { ctx.save(); ctx.fillStyle = 'rgba(255,90,40,.38)'; for (const [x, y] of o.cells) ctx.fillRect(x * C, y * C, C, C); ctx.restore(); }
+        continue;
+      }
+      if (def.kind === 'ice' && o.attach) {
+        const sup = world.objects.get(o.attach);
+        const sk = sup ? getItem(sup.item).kind : '';
+        if (sup && (sk === 'shuttle' || sk === 'moving')) {
+          // ice on a moving platform rides along with it
+          let dx = 0, dy = 0;
+          if (sk === 'shuttle') { const tick = demo ? 0 : g.renderTick(); const a = childRect(sup, 0, tick), b = childRect(sup, 0, 0); dx = a.x - b.x; dy = a.y - b.y; }
+          else { const ph = hzByObj.get(sup.id) ?? (sim ? 0 : t); const len = sim ? sim.movers.find(m => m.o.id === sup.id)?.hz?.pathLen ?? moverPathLen() : moverPathLen(); const a = moverRect(sup, demo ? 0 : ph, len), b = moverBaseRect(sup); dx = a.x - b.x; dy = a.y - b.y; }
+          for (const [x, y] of o.cells) drawIceCell(ctx, x * C + dx, y * C + dy, t);
+          continue;
+        }
+      }
       if (def.kind === 'wire') {
         const sup = onMover(world, o);
         if (sup) {
@@ -435,6 +487,31 @@ export class Renderer {
         ctx.save(); ctx.strokeStyle = 'rgba(200,200,220,.8)'; ctx.setLineDash([3, 3]); for (const [x, y] of o.cells) ctx.strokeRect(x * C + 4, y * C + 4, C - 8, C - 8); ctx.restore();
       }
     }
+  }
+
+  private windCache = new Map<string, FanField>();
+  /** Animated wind streaks along a fan's lanes. */
+  private drawWind(world: World, o: PlacedObject, t: number) {
+    const key = `${o.id}:${world.version}`;
+    let f = this.windCache.get(key);
+    if (!f) { f = fanField(world, o); if (this.windCache.size > 200) this.windCache.clear(); this.windCache.set(key, f); }
+    const ctx = this.ctx;
+    ctx.save();
+    for (const l of f.lanes) {
+      ctx.fillStyle = 'rgba(190,240,255,.06)'; ctx.fillRect(l.r.x, l.r.y, l.r.w, l.r.h);
+      const len = f.dir.x !== 0 ? l.r.w : l.r.h;
+      for (let i = 0; i < 4; i++) {
+        const k = ((t * 1.6 + i / 4 + (l.r.x + l.r.y) * 0.003) % 1);
+        const d = k * len, a = (1 - k) * 0.55;
+        const across = ((i * 37) % 30) - 15;
+        const cx = l.r.x + l.r.w / 2, cy = l.r.y + l.r.h / 2;
+        let x: number, y: number;
+        if (f.dir.x !== 0) { x = f.dir.x > 0 ? l.r.x + d : l.r.x + l.r.w - d; y = cy + across; } else { y = f.dir.y > 0 ? l.r.y + d : l.r.y + l.r.h - d; x = cx + across; }
+        ctx.strokeStyle = `rgba(230,250,255,${a.toFixed(3)})`; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - f.dir.x * 14, y - f.dir.y * 14); ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   /** Every cell a moving platform passes over (shown while drafting and building). It reserves nothing. */
@@ -552,6 +629,17 @@ export class Renderer {
         const o = { id: '_', item, owner: null, prov: 'player' as const, x: r.x, y: r.y, rot: r.rot as Rot, variant: 0, cells, attach: null, round: 0 };
         this.drawMoverPath(o, moverPathLen());
         if (chk?.wallCells?.length) this.drawWallOverlap(chk.wallCells);
+      }
+      const probeO: PlacedObject = { id: '_', item, owner: null, prov: 'player', x: r.x, y: r.y, rot: r.rot as Rot, variant: r.variant, cells, attach: null, round: 0 };
+      if (def.kind === 'fan') this.drawWind(world, probeO, this.t);
+      if (def.kind === 'turret') { ctx.save(); ctx.strokeStyle = 'rgba(123,234,92,.6)'; ctx.setLineDash([6, 6]); ctx.lineWidth = 2; const c = cellCenter(r.x, r.y); ctx.beginPath(); ctx.arc(c.x, c.y, NEWITEMS.turretRange, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+      if (def.kind === 'planemaker') {
+        // the flight line of its planes, up to the first solid
+        const sp = planeSpawnRect(probeO), d = planeDir(probeO);
+        ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.setLineDash([8, 8]); ctx.lineWidth = 2;
+        let x = sp.x + sp.w / 2, y = sp.y + sp.h / 2; ctx.beginPath(); ctx.moveTo(x, y);
+        for (let i = 0; i < 200; i++) { x += d.x * 24; y += d.y * 24; if (world.solidCell(Math.floor(x / C), Math.floor(y / C)) || x < 0 || y < 0 || x > world.w * C || y > world.h * C) break; ctx.lineTo(x, y); }
+        ctx.stroke(); ctx.setLineDash([]); drawPlane(ctx, sp, d.x, d.y, '#ffd25e', this.t); ctx.restore();
       }
       if (def.kind === 'shuttle' || def.kind === 'wheel') { this.drawMoverPreview(world, def.kind, r, cells, ok, chk); }
       else drawItem(ctx, def, cells, 0, 0, r.rot as Rot, { ghost: true, owner: '#ffd25e', t: this.t, variant: r.variant, state: 'out' });
@@ -704,9 +792,23 @@ export class Renderer {
       const x = p.x + p.vx * since, y = p.y + p.vy * since + (p.kind === 'cannon' ? 0.5 * HAZARD.cannonGravity * since * since : 0);
       const ang = Math.atan2(p.vy, p.vx);
       ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-      if (p.kind === 'arrow') { ctx.strokeStyle = '#6b4424'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-18, 0); ctx.lineTo(8, 0); ctx.stroke(); ctx.fillStyle = '#ccd'; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(5, -4); ctx.lineTo(5, 4); ctx.fill(); ctx.fillStyle = '#ff5e8a'; ctx.fillRect(-20, -3, 5, 6); }
+      if (p.kind === 'dart') { ctx.fillStyle = '#e4e8f0'; ctx.fillRect(-10, -1.5, 12, 3); ctx.fillStyle = '#5ce05c'; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-15, -4); ctx.lineTo(-15, 4); ctx.fill(); ctx.fillStyle = '#9aa0ad'; ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(2, -2); ctx.lineTo(2, 2); ctx.fill(); }
+      else if (p.kind === 'arrow') { ctx.strokeStyle = '#6b4424'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-18, 0); ctx.lineTo(8, 0); ctx.stroke(); ctx.fillStyle = '#ccd'; ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(5, -4); ctx.lineTo(5, 4); ctx.fill(); ctx.fillStyle = '#ff5e8a'; ctx.fillRect(-20, -3, 5, 6); }
       else { ctx.fillStyle = '#20202c'; ctx.beginPath(); ctx.arc(0, 0, HAZARD.cannonBallR, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(-4, -4, 4, 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
+    }
+    // paper planes, extrapolated to the tick we draw at
+    const tick = g.rehearsal ? sim.tick : g.renderTick();
+    for (const m of sim.movers) {
+      if (!m.plane?.alive) continue;
+      const r = sim.moverRectAt(m, tick);
+      drawPlane(ctx, r, m.plane.dx, m.plane.dy, this.ownerColor(g, m.o.owner), t);
+    }
+    // ghosts that are waiting to strike or hunting someone
+    for (const gs of sim.graves) for (const gh of gs.ghosts) {
+      if (gh.state !== 'wait' && gh.state !== 'chase') continue;
+      drawGhost(ctx, gh.x, gh.y, t + gh.idx, true);
+      if (gh.state === 'wait') { ctx.save(); ctx.fillStyle = 'rgba(255,60,90,.9)'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('!', gh.x, gh.y - 18); ctx.restore(); }
     }
     // players: remote interpolated, local predicted
     for (const p of sim.players) {

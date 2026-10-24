@@ -5,7 +5,7 @@ import { pendulumSweep } from './hazards';
 import { cellsTouched, childCount, childRect, isKinematic, newMotion, referenceHit, sweepOf } from './movers';
 import { getItem, ITEMS, SUPPORT_KINDS, type ItemDef } from './items';
 import { NavGraph } from './nav';
-import { C_SOLID, footprint, TERRAIN_ID, type PlacedObject, World } from './world';
+import { C_ONEWAY, C_SOLID, footprint, TERRAIN_ID, type PlacedObject, World } from './world';
 
 export interface PlaceRequest { item: string; x: number; y: number; rot: number; variant: number }
 
@@ -78,6 +78,35 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
     if (hit.size === 0) return fail(permanent ? 'No removable items here (map terrain is permanent)' : 'No removable items here', cells);
     const deps = dependentsOf(world, hit);
     return { ok: true, cells, support: null, targets: [...hit], dependents: [...deps], region: regionOf(world, [...hit, ...deps]) };
+  }
+
+  if (def.kind === 'ice') {
+    // ice lies on a top surface: each cell must sit directly above a solid cell, an up-facing one-way platform or one
+    // moving platform's starting body, all of one kind; the run is trimmed at the first unsupported cell
+    const want = def.mask.length;
+    const ice: Cell[] = [];
+    let mover: string | null = null, statics = new Set<string>(), mode: 'mover' | 'static' | null = null;
+    const taken = new Set<string>();
+    for (const o of world.objects.values()) if (getItem(o.item).kind === 'ice') for (const c of o.cells) taken.add(`${c[0]},${c[1]}`);
+    for (let i = 0; i < want; i++) {
+      const x = req.x + i, y = req.y;
+      if (!world.inBounds(x, y) || !world.inBounds(x, y + 1) || !inBuild(x, y) || world.isProtectedCell(x, y)) break;
+      if (world.coll[world.idx(x, y)] === C_SOLID || taken.has(`${x},${y}`)) break;
+      const sid = world.occAt(x, y + 1);
+      const so = sid && sid !== TERRAIN_ID ? world.objects.get(sid) : null;
+      const sk = so ? getItem(so.item).kind : null;
+      const si = world.idx(x, y + 1);
+      const isMover = sk === 'shuttle' || sk === 'moving';
+      const isStatic = !isMover && (world.coll[si] === C_SOLID || (world.coll[si] === C_ONEWAY && world.collDir[si] === 0));
+      if (isMover) { if (mode === 'static' || (mover && mover !== so!.id)) break; mode = 'mover'; mover = so!.id; }
+      else if (isStatic) { if (mode === 'mover') break; mode = 'static'; statics.add(world.terrainAt(x, y + 1) ? TERRAIN_ID : (world.collObj[si] ?? TERRAIN_ID)); }
+      else break;
+      ice.push([x, y]);
+    }
+    if (!ice.length) return fail('Ice must lie on top of a block, platform or item', [[req.x, req.y]]);
+    if (world.playerObjectCount() >= MATCH.maxPlacedObjects) return fail('The course is full', ice);
+    const support = mode === 'mover' ? mover : statics.size === 1 ? [...statics][0] : null;
+    return { ok: true, cells: ice, support, trimmed: want - ice.length, region: regionForCells(ice, CELL * 2) };
   }
 
   const fp = footprint(world, def, req.x, req.y, rot);
@@ -261,7 +290,7 @@ export function makeObject(world: World, req: PlaceRequest, chk: PlaceCheck, own
   const def = getItem(req.item);
   return {
     id: world.allocId(), item: def.id, owner, prov: 'player', x: req.x, y: req.y, rot: req.rot as Rot, variant: req.variant,
-    cells: chk.cells, attach: def.kind === 'wire' || def.kind === 'sniper' ? chk.support : null, wireLen: chk.wireLen, round,
+    cells: chk.cells, attach: def.kind === 'wire' || def.kind === 'sniper' || def.kind === 'ice' ? chk.support : null, wireLen: chk.wireLen, round,
     ...(KINEMATIC.has(def.kind) ? { mv: newMotion(def.id, req.variant) } : {}),
   };
 }

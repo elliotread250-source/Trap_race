@@ -288,3 +288,338 @@ describe('phase 3: scoring, rules and game settings', () => {
     expect(rankMatch([h.id, b.id], tally, new Map([[h.id, 50], [b.id, 150]])).winners).toEqual([h.id]);
   });
 });
+
+// ================================================================ Phase 5
+import { NEWITEMS } from '../../shared/config';
+import { IN_LEFT } from '../../shared/physics';
+import { planeSpawnRect } from '../../shared/fans';
+
+const firstPlane = (sim: RaceSim) => sim.movers.find(m => m.plane?.alive);
+const cadence = Math.round(NEWITEMS.planeInterval * 60);
+
+describe('phase 5: paper plane maker', () => {
+  it('fires a 2x1 plane from its top cell every 1.4 s at crossbow-arrow speed, and it crumples on a wall', () => {
+    const w = lab();
+    const mk = put(w, 'planemaker', 8, 14);
+    const sim = new RaceSim(w, ['a'], { roundKey: 'pl', maxTicks: 8000 });
+    at(sim, 'a', 3 * C, floorY());
+    run(sim, cadence - 1);
+    expect(firstPlane(sim)).toBeUndefined();
+    run(sim, 1);
+    const p = firstPlane(sim)!;
+    expect(p.rect).toMatchObject({ w: 96, h: 24 });
+    expect(p.rect.x).toBe(planeSpawnRect(mk).x);
+    expect(p.rect.y + p.rect.h / 2).toBe(14 * C + C / 2); // out of the top (emitter) cell
+    const x0 = p.rect.x;
+    run(sim, 60);
+    expect(p.rect.x - x0).toBeCloseTo(NEWITEMS.planeSpeed, 0);
+    const ev = run(sim, 120);
+    expect(ev.some(e => e.type === 'crumple')).toBe(true); // hit the 12-cell wall at column 20
+    expect(sim.movers.filter(m => m.plane?.alive && m.rect.x > 18 * C)).toHaveLength(0);
+  });
+
+  it('never kills: a plane flying into a player crumples and the player lives', () => {
+    const w = lab();
+    put(w, 'planemaker', 8, 14);
+    put(w, 'block_1x1', 12, 15); // the player stands on it, right in the plane's row
+    const sim = new RaceSim(w, ['a'], { roundKey: 'pl2', maxTicks: 8000 });
+    at(sim, 'a', 12 * C + 10, 15 * C - H);
+    const ev = run(sim, cadence + 120);
+    expect(ev.some(e => e.type === 'crumple')).toBe(true);
+    expect(sim.player('a')!.status).toBe('racing');
+  });
+
+  it('players can stand on a plane and ride it; a downward plane carries them down; landing on an upward plane crumples it', () => {
+    const w = lab();
+    put(w, 'planemaker', 8, 13); // cells (8,13),(8,14); fires right from (8,13)
+    const sim = new RaceSim(w, ['a'], { roundKey: 'pl3', maxTicks: 8000 });
+    run(sim, cadence + 5);
+    const p = firstPlane(sim)!;
+    at(sim, 'a', p.rect.x + 30, p.rect.y - H - 2);
+    run(sim, 10);
+    const b = sim.player('a')!.body;
+    expect(b.grounded).toBe(true);
+    expect(sim.movers[b.groundMover]).toBe(p);
+    const bx = b.x;
+    run(sim, 30);
+    expect(b.x - bx).toBeGreaterThan(90); // carried ~103 px in 0.5 s
+    // downward plane: rotation 1 fires down from the right cell of a horizontal machine
+    const w2 = lab();
+    put(w2, 'planemaker', 10, 4, 1);
+    const s2 = new RaceSim(w2, ['a'], { roundKey: 'pl4', maxTicks: 8000 });
+    run(s2, cadence + 3);
+    const d = firstPlane(s2)!;
+    expect(d.plane!.dy).toBe(1);
+    at(s2, 'a', d.rect.x - 2, d.rect.y - H - 1);
+    run(s2, 6);
+    const yb = s2.player('a')!.body.y;
+    run(s2, 30);
+    expect(s2.player('a')!.body.y - yb).toBeGreaterThan(80);
+    expect(d.plane!.alive).toBe(true);
+    // upward plane: rotation 3 fires up from the left cell
+    const w3 = lab();
+    put(w3, 'planemaker', 10, 14, 3);
+    const s3 = new RaceSim(w3, ['a'], { roundKey: 'pl5', maxTicks: 8000 });
+    run(s3, cadence + 30);
+    const u = firstPlane(s3)!;
+    expect(u.plane!.dy).toBe(-1);
+    at(s3, 'a', u.rect.x - 2, u.rect.y - H - 60);
+    const ev = run(s3, 30);
+    expect(ev.some(e => e.type === 'crumple')).toBe(true);
+    expect(s3.player('a')!.status).toBe('racing');
+  });
+
+  it('arrows are destroyed by the plane they crumple; sniper rounds pass through it and still hit the player behind', () => {
+    const w = lab();
+    put(w, 'planemaker', 8, 11);
+    put(w, 'crossbow', 13, 9, 1); // fires down across the plane's line
+    const sim = new RaceSim(w, ['a'], { roundKey: 'pl6', maxTicks: 8000 });
+    at(sim, 'a', 3 * C, floorY());
+    const ev = run(sim, cadence + 70);
+    expect(ev.some(e => e.type === 'crumple')).toBe(true);
+    expect(sim.projectiles.filter(p => p.kind === 'arrow' && p.y > 11 * C + 30 && p.x > 13 * C && p.x < 14 * C)).toHaveLength(0);
+    // sniper: a plane sits between the sniper and the player at the moment it fires; both get hit
+    const w2 = lab();
+    put(w2, 'block_1x1', 10, 15); put(w2, 'sniper', 10, 14); // fires right along y = 14.5 cells - 6 px
+    put(w2, 'planemaker', 8, 4);
+    put(w2, 'block_1x1', 16, 15); // the player stands on it, in the shot's line
+    const s2 = new RaceSim(w2, ['a'], { roundKey: 'pl7', maxTicks: 8000 });
+    at(s2, 'a', 16 * C + 10, 15 * C - H);
+    run(s2, 140);
+    const pm = firstPlane(s2)!;
+    Object.assign(pm.plane!, { x: 12 * C, y: 14 * C + 4, t: s2.tick }); pm.rect = { ...pm.rect, x: 12 * C, y: 14 * C + 4 }; pm.prev = { ...pm.rect };
+    const e2 = run(s2, 12);
+    expect(e2.some(e => e.type === 'crumple')).toBe(true);
+    expect(e2.some(e => e.type === 'death' && e.pid === 'a' && e.cause === 'sniper')).toBe(true);
+  });
+
+  it('crumples and is sucked in within 4.5 cells of a black hole', () => {
+    const w = lab();
+    put(w, 'planemaker', 8, 12);
+    put(w, 'blackhole', 15, 8);
+    const sim = new RaceSim(w, ['a'], { roundKey: 'pl8', maxTicks: 8000 });
+    at(sim, 'a', 3 * C, floorY());
+    const ev = run(sim, cadence + 80);
+    const cr = ev.find(e => e.type === 'crumple') as Extract<RaceEvent, { type: 'crumple' }>;
+    expect(cr).toBeTruthy();
+    expect(cr.hx).toBeDefined();
+    expect(Math.hypot(cr.x - (15 * C + 24), cr.y - (8 * C + 24))).toBeLessThanOrEqual(NEWITEMS.planeHoleCrumple + 4);
+  });
+});
+
+describe('phase 5: fan', () => {
+  it('an upward fan settles a player into steady levitation; stepping out of its width drops them', () => {
+    const w = lab();
+    put(w, 'fan', 10, 15); // casing row 15, wind up through rows 10..14
+    const sim = new RaceSim(w, ['a'], { roundKey: 'fan', maxTicks: 8000 });
+    at(sim, 'a', 11 * C + 10, 12 * C);
+    run(sim, 240);
+    const b = sim.player('a')!.body;
+    const y1 = b.y;
+    run(sim, 60);
+    expect(Math.abs(b.y - y1)).toBeLessThan(3);
+    expect(Math.abs(b.vy)).toBeLessThan(12);
+    expect(b.y + H).toBeLessThan(15 * C - 40); // floating clear of the casing
+    run(sim, 80, { a: IN_LEFT });
+    run(sim, 60);
+    expect(b.grounded).toBe(true);
+  });
+
+  it('the casing is solid; projectiles are pushed by the wind', () => {
+    const w = lab();
+    put(w, 'fan', 10, 13, 1); // wind to the right, casing column 10 rows 13..15
+    const sim = new RaceSim(w, ['a'], { roundKey: 'fan2', maxTicks: 8000 });
+    at(sim, 'a', 8 * C, floorY());
+    run(sim, 60, { a: IN_RIGHT });
+    expect(sim.player('a')!.body.x + W).toBeLessThanOrEqual(10 * C + 0.01);
+    const w2 = lab();
+    put(w2, 'fan', 12, 15); // up
+    put(w2, 'crossbow', 9, 13); // arrow right along row 13 crosses the column
+    const s2 = new RaceSim(w2, ['a'], { roundKey: 'fan3', maxTicks: 8000 });
+    at(s2, 'a', 3 * C, floorY());
+    run(s2, 60 + 40);
+    const arrows = s2.projectiles.filter(p => p.kind === 'arrow');
+    expect(arrows.some(p => p.vy < -20)).toBe(true);
+  });
+
+  it('a plane crossing an upward fan strafes up; one flying into a fan\'s wind crumples within 3 cells', () => {
+    const w = lab();
+    put(w, 'planemaker', 8, 14);
+    put(w, 'fan', 12, 15);
+    const sim = new RaceSim(w, ['a'], { roundKey: 'fan4', maxTicks: 8000 });
+    at(sim, 'a', 3 * C, floorY());
+    run(sim, cadence + 70);
+    const p = firstPlane(sim);
+    expect(p).toBeTruthy();
+    expect(p!.rect.y).toBeLessThan(14 * C + 12 - 20);
+    const w2 = lab();
+    put(w2, 'planemaker', 8, 14);
+    put(w2, 'fan', 17, 13, 3); // wind to the left, against the plane
+    const s2 = new RaceSim(w2, ['a'], { roundKey: 'fan5', maxTicks: 8000 });
+    at(s2, 'a', 3 * C, floorY());
+    const ev = run(s2, cadence + 200);
+    const cr = ev.find(e => e.type === 'crumple') as Extract<RaceEvent, { type: 'crumple' }>;
+    expect(cr).toBeTruthy();
+    expect(17 * C - cr.x).toBeLessThanOrEqual(3 * C + 60);
+  });
+});
+
+describe('phase 5: gravestone', () => {
+  it('touching the stone breaks a flower; a ghost waits 1 s, then hunts and kills its target and disappears', () => {
+    const w = lab();
+    put(w, 'grave', 12, 15, 0, 'owner');
+    const sim = new RaceSim(w, ['a', 'b'], { roundKey: 'gr', maxTicks: 8000, humans: 2 });
+    const g = sim.graves[0];
+    expect(g.ghosts).toHaveLength(2);
+    expect(g.flowers).toBe(2);
+    at(sim, 'b', 3 * C, floorY());
+    at(sim, 'a', 12 * C + 10, floorY() - 8);
+    run(sim, 2);
+    expect(g.broken).toBe(1);
+    const gh = g.ghosts.find(x => x.state !== 'idle')!;
+    expect(gh.target).toBe('a');
+    // run away to the right: the ghost is still at the grave after 0.9 s
+    run(sim, 54, { a: IN_RIGHT });
+    expect(gh.state).toBe('wait');
+    run(sim, 10, { a: IN_RIGHT });
+    expect(gh.state).toBe('chase');
+    at(sim, 'a', 17 * C, floorY()); // wait at the wall: it catches up
+    const ev = run(sim, 300);
+    expect(ev.some(e => e.type === 'death' && e.pid === 'a' && e.cause === 'ghost' && e.credit === 'owner')).toBe(true);
+    expect(gh.state).toBe('gone');
+    expect(sim.player('b')!.status).toBe('racing');
+  });
+
+  it('one ghost per player per round, a bystander in its path dies while it keeps chasing, and finishing loses it', () => {
+    const w = lab();
+    put(w, 'grave', 25, 15, 0, 'owner');
+    const sim = new RaceSim(w, ['a', 'b'], { roundKey: 'gr2', maxTicks: 8000 });
+    const g = sim.graves[0];
+    at(sim, 'a', 25 * C + 10, floorY() - 8);
+    run(sim, 2);
+    at(sim, 'a', 25 * C + 10, floorY() - 8);
+    run(sim, 2);
+    expect(g.ghosts.filter(x => x.state !== 'idle')).toHaveLength(1); // touching again does nothing
+    at(sim, 'a', 34 * C, floorY()); // near the flag (finish at 35..37)
+    at(sim, 'b', 29 * C, floorY()); // between the grave and a
+    const ev = run(sim, 140);
+    expect(ev.some(e => e.type === 'death' && e.pid === 'b' && e.cause === 'ghost')).toBe(true);
+    const gh = g.ghosts.find(x => x.target === 'a')!;
+    expect(gh.state).toBe('chase');
+    run(sim, 60, { a: IN_RIGHT }); // reach the flag
+    expect(sim.player('a')!.status).toBe('finished');
+    expect(gh.state).toBe('gone');
+  });
+
+  it('the dirt pile is a platform; a floating grave can be stood on', () => {
+    const w = lab();
+    put(w, 'grave', 10, 11);
+    const sim = new RaceSim(w, ['a'], { roundKey: 'gr3', maxTicks: 8000 });
+    at(sim, 'a', 10 * C + 10, 11 * C - H - 30);
+    run(sim, 40);
+    const b = sim.player('a')!.body;
+    expect(b.grounded).toBe(true);
+    expect(b.y + H).toBeCloseTo(12 * C - NEWITEMS.dirtH, 3);
+  });
+});
+
+describe('phase 5: dart turret', () => {
+  it('shoots the closest visible player within 6 cells, never through walls or out of range, every ~2 s', () => {
+    const w = lab();
+    put(w, 'dart_turret', 15, 12, 0, 'owner');
+    const near = new RaceSim(w, ['a'], { roundKey: 'dt', maxTicks: 8000 });
+    at(near, 'a', 11 * C, floorY());
+    const ev = run(near, 90);
+    expect(ev.filter(e => e.type === 'fire' && e.kind === 'dart').length).toBeGreaterThanOrEqual(1);
+    expect(ev.some(e => e.type === 'death' && e.cause === 'dart')).toBe(true);
+    const far = new RaceSim(w, ['a'], { roundKey: 'dt2', maxTicks: 8000 });
+    at(far, 'a', 7 * C, floorY());
+    expect(run(far, 200).some(e => e.type === 'fire')).toBe(false); // 8+ cells away
+    const hidden = new RaceSim(w, ['a'], { roundKey: 'dt3', maxTicks: 8000 });
+    at(hidden, 'a', 23 * C, floorY()); // behind the wall at 20-21
+    expect(run(hidden, 200).some(e => e.type === 'fire')).toBe(false);
+  });
+
+  it('darts pierce players (killing each) and crumple paper planes, vanishing with them', () => {
+    const w = lab();
+    put(w, 'dart_turret', 16, 15);
+    const sim = new RaceSim(w, ['a', 'b'], { roundKey: 'dt4', maxTicks: 8000 });
+    at(sim, 'a', 13 * C, floorY());
+    at(sim, 'b', 11 * C, floorY());
+    const ev = run(sim, 60);
+    expect(ev.filter(e => e.type === 'death' && e.cause === 'dart').map(e => (e as { pid: string }).pid).sort()).toEqual(['a', 'b']);
+    const w2 = lab();
+    put(w2, 'planemaker', 8, 11);
+    put(w2, 'dart_turret', 13, 6);
+    const s2 = new RaceSim(w2, ['a'], { roundKey: 'dt5', maxTicks: 8000 });
+    at(s2, 'a', 13 * C, floorY());
+    const e2 = run(s2, cadence + 30);
+    void e2;
+    expect(s2.player('a')!.status === 'racing' || e2.some(e => e.type === 'crumple')).toBe(true);
+  });
+});
+
+describe('phase 5: ice', () => {
+  it('lies only on top surfaces, trims unsupported cells, takes no grid squares, and items go on top of it', () => {
+    const w = lab();
+    put(w, 'plank_3', 8, 12);
+    const ice = put(w, 'ice_5', 8, 11);
+    expect(ice.cells).toHaveLength(3); // trimmed to the plank
+    expect(w.occAt(8, 11)).toBe('');
+    put(w, 'block_1x1', 9, 11); // built over the ice
+    expect(checkPlacement(w, { item: 'ice_3', x: 12, y: 8, rot: 0, variant: 0 }).ok).toBe(false); // floating
+    expect(checkPlacement(w, { item: 'ice_3', x: 23, y: 15, rot: 0, variant: 0 }).ok).toBe(true); // on the floor
+    put(w, 'oneway', 24, 10);
+    expect(checkPlacement(w, { item: 'ice_3', x: 24, y: 9, rot: 0, variant: 0 }).ok).toBe(true); // on a one-way platform
+  });
+
+  it('is slippery: momentum carries much further after letting go than on bare floor', () => {
+    const slide = (iced: boolean) => {
+      const w = lab();
+      if (iced) put(w, 'ice_5', 9, 15), put(w, 'ice_5', 14, 15);
+      const sim = new RaceSim(w, ['a'], { roundKey: 'ice', maxTicks: 8000 });
+      at(sim, 'a', 9 * C, floorY());
+      run(sim, 5);
+      run(sim, 40, { a: IN_RIGHT | 8 });
+      const x0 = sim.player('a')!.body.x;
+      run(sim, 40);
+      return sim.player('a')!.body.x - x0;
+    };
+    expect(slide(true)).toBeGreaterThan(slide(false) * 3);
+  });
+
+  it('ice on a moving platform rides with it and makes the platform slippery', () => {
+    const w = lab();
+    const sh = put(w, 'shuttle', 8, 12);
+    const ice = put(w, 'ice_3', 8, 11);
+    expect(ice.cells).toHaveLength(2);
+    expect(ice.attach).toBe(sh.id);
+    const sim = new RaceSim(w, ['a'], { roundKey: 'ice2', maxTicks: 8000 });
+    expect(sim.movers.find(m => m.o.id === sh.id)!.ice).toBe(true);
+    at(sim, 'a', 8 * C + 20, 12 * C - H - 1);
+    run(sim, 3);
+    expect(sim.player('a')!.body.groundSurf).toBe(1);
+  });
+});
+
+describe('phase 5: multiplayer sync of new items', () => {
+  it('a client mirror reproduces planes, ghosts and flowers from server snapshots', () => {
+    const w = lab();
+    put(w, 'planemaker', 8, 12);
+    put(w, 'grave', 14, 15);
+    const server = new RaceSim(w, ['a', 'b'], { roundKey: 'sy', maxTicks: 8000, humans: 2 });
+    const client = new RaceSim(w.clone(), ['a', 'b'], { roundKey: 'sy', maxTicks: 8000, humans: 2 });
+    at(server, 'a', 14 * C + 10, floorY() - 8);
+    at(server, 'b', 3 * C, floorY());
+    run(server, cadence + 30);
+    const snap = JSON.parse(JSON.stringify(server.snapshot()));
+    client.applySnapshot(snap);
+    const sp = server.movers.filter(m => m.plane?.alive), cp = client.movers.filter(m => m.plane?.alive);
+    expect(cp.map(m => m.id)).toEqual(sp.map(m => m.id));
+    expect(cp[0].rect.x).toBeCloseTo(sp[0].rect.x, 1);
+    expect(client.graves[0].broken).toBe(1);
+    expect(client.graves[0].ghosts.map(g => g.state)).toEqual(server.graves[0].ghosts.map(g => g.state));
+    // between snapshots the client extrapolates planes on their straight flight
+    expect(client.moverRectAt(cp[0], snap.tick + 30).x).toBeCloseTo(sp[0].rect.x + NEWITEMS.planeSpeed / 2, 0);
+  });
+});

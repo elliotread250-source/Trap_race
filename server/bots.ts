@@ -1,6 +1,6 @@
 // Server-side bots. They draft and build through the same rules as humans, and race by producing input bits for the
 // same physics: no teleporting, no flying, no hazard immunity. Difficulty only changes timing, judgement and mistakes.
-import { BOT_DIFFICULTY, CELL, DT, HAZARD, PHYS, TICK_HZ, type Difficulty } from '../shared/config';
+import { BOT_DIFFICULTY, CELL, DT, HAZARD, NEWITEMS, PHYS, TICK_HZ, type Difficulty } from '../shared/config';
 import { circleRect, rectsOverlap, type Rect } from '../shared/grid';
 import { cellCenter, laserBeamRect, laserState, pendulumPos, rspikeParts, rspikeState, sawPos } from '../shared/hazards';
 import { getItem, ITEMS, type ItemDef } from '../shared/items';
@@ -270,7 +270,9 @@ export class BotRacer {
         return b.wallSliding && this.rng.chance(0.03) ? IN_JUMP : 0;
       }
     }
-    const ridden = b.groundMover >= 0 ? sim.movers[b.groundMover] : undefined;
+    // paper planes and dirt piles are stood on like ground: only real platforms are riding nodes
+    const gm = b.groundMover >= 0 ? sim.movers[b.groundMover] : undefined;
+    const ridden = gm && !gm.plane && !gm.fixed ? gm : undefined;
     if (ridden && ridden.hz) {
       // riding a legacy moving platform: hop off toward the flag once it is roughly aligned
       const fin = sim.world.finishPx;
@@ -322,10 +324,10 @@ export class BotRacer {
     // align on the recorded start position
     if (Math.abs(dx) > this.diff.alignTol || Math.abs(b.vx) > 30) return steerTo(b, dx, this.diff.alignTol);
     // wait for a safe window on timed hazards
-    if (this.waitT <= 0 && this.rng.chance(this.diff.safetyCheck) && !edgeSafe(e, sim)) { this.waitT = 0.25; }
+    if (this.waitT <= 0 && this.rng.chance(this.diff.safetyCheck) && !edgeSafe(e, sim, this.id)) { this.waitT = 0.25; }
     if (this.waitT > 0) {
       this.waitT -= DT;
-      if (this.waitT <= 0 && !edgeSafe(e, sim) && this.rng.chance(0.85)) this.waitT = 0.2;
+      if (this.waitT <= 0 && !edgeSafe(e, sim, this.id) && this.rng.chance(0.85)) this.waitT = 0.2;
       return 0;
     }
     if (e.period && (e.phase! - (sim.tick % e.period) + e.period) % e.period !== 0) { this.holdProgress(sim, e); return 0; } // wait for the platform
@@ -423,12 +425,21 @@ function hazardRisk(e: NavEdge, sim: RaceSim): number {
       if (Math.hypot(e.path[i] + BW / 2 - cc.x, e.path[i + 1] + BH / 2 - cc.y) < reach) { v += 1; break; }
     }
   }
+  // dart turrets watch 6 cells around them; gravestones are best given a wide berth
+  for (const t of sim.turrets) {
+    const cc = cellCenter(t.o.x, t.o.y);
+    for (let i = 0; i < e.path.length; i += 8) if (Math.hypot(e.path[i] + BW / 2 - cc.x, e.path[i + 1] + BH / 2 - cc.y) < NEWITEMS.turretRange) { v += 1; break; }
+  }
+  for (const g of sim.graves) {
+    const cc = cellCenter(g.o.x, g.o.y);
+    for (let i = 0; i < e.path.length; i += 8) if (Math.hypot(e.path[i] + BW / 2 - cc.x, e.path[i + 1] + BH / 2 - cc.y) < 70) { v += 2; break; }
+  }
   riskCache.set(e, { sim, v });
   return v;
 }
 
 /** Predict timed hazards and projectiles along the edge's recorded path. */
-export function edgeSafe(e: NavEdge, sim: RaceSim): boolean {
+export function edgeSafe(e: NavEdge, sim: RaceSim, botId = ''): boolean {
   const slow = sim.slowMul;
   for (let f = 0; f < e.frames; f += 3) {
     const x = e.path[f * 2], y = e.path[f * 2 + 1];
@@ -440,6 +451,11 @@ export function edgeSafe(e: NavEdge, sim: RaceSim): boolean {
       if (h.kind === 'laser' && laserState(ph) !== 'off') { const r = laserBeamRect(h.o, h.beam); if (r && rectsOverlap(br, r)) return false; }
       if (h.kind === 'saw') { const s = sawPos(h.o, ph); if (circleRect(s.x, s.y, HAZARD.sawR + 6, br)) return false; }
       if (h.kind === 'pendulum') { const s = pendulumPos(h.o, ph).ball; if (circleRect(s.x, s.y, HAZARD.pendulumBallR + 6, br)) return false; }
+    }
+    // a ghost hunting someone else still kills whoever it touches: don't run into its path
+    for (const g of sim.graves) for (const gh of g.ghosts) {
+      if (gh.state !== 'chase' || gh.target === botId) continue;
+      if (Math.hypot(gh.x - (x + BW / 2), gh.y - (y + BH / 2)) < 70 + t * NEWITEMS.ghostSpeed * 0.5) return false;
     }
     for (const mw of sim.moverWires) {
       // barbed wire riding a platform: where its strips will be when the bot gets there

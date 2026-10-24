@@ -123,7 +123,22 @@ export class World {
       }
     }
     this.kinematic.sort((a, b) => idNum(a.id) - idNum(b.id) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    this.applyOverlays();
     this.version++;
+  }
+
+  /** Ice coats the top surface under each of its cells (ice on a moving platform rides with it instead: see race.ts). */
+  private applyOverlays() {
+    for (const o of this.objects.values()) {
+      if (getItem(o.item).kind !== 'ice') continue;
+      const sup = o.attach && o.attach !== TERRAIN_ID ? this.objects.get(o.attach) : null;
+      if (sup && (getItem(sup.item).kind === 'shuttle' || getItem(sup.item).kind === 'moving')) continue;
+      for (const [x, y] of o.cells) {
+        if (!this.inBounds(x, y + 1)) continue;
+        const i = this.idx(x, y + 1);
+        if ((this.coll[i] === C_SOLID || this.coll[i] === C_ONEWAY) && this.surf[i] !== S_CONVEYOR) this.surf[i] = S_ICE;
+      }
+    }
   }
 
   isProtectedCell(x: number, y: number): boolean {
