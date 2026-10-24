@@ -93,6 +93,7 @@ export const sfx = {
   },
   siren: () => { for (let i = 0; i < 3; i++) { tone(620, 0.22, 'square', 0.18, 300, i * 0.5); tone(920, 0.22, 'square', 0.18, -300, i * 0.5 + 0.25); } },
   crumple: () => noise(0.12, 0.18, 1800),
+  howl: () => { noise(1.4, 0.3, 500); tone(180, 1.2, 'sine', 0.12, 120); },
 };
 
 // four-bar loop: bass + arpeggio, deliberately light so effects stay readable

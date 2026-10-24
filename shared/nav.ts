@@ -7,6 +7,7 @@ import { fieldAccel, type HoleInfo } from './field';
 import { cellCenter, moverBaseRect, ovalHitsRect, springDir, springRect, staticLethal, type StaticLethal } from './hazards';
 import { getItem } from './items';
 import { fanAccel, fanFields, graveDirt, graveStone, type FanField } from './fans';
+import { ballRect, gravityAt } from './mapfx';
 import { childCount, childId, childRect, motionOf, sweepOf } from './movers';
 import { IN_DOWN, IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
 import { C_ONEWAY, World, type PlacedObject } from './world';
@@ -70,6 +71,8 @@ export class Prober {
   readonly movers: Mover[] = [];
   readonly env: PhysEnv;
   readonly fans: FanField[];
+  /** static movers that count as standing spots (gravestone dirt, the beach ball at rest) */
+  readonly floorMovers = new Set<number>();
   /** kinematic platform children, in the same order as the race sim's kinematic movers */
   readonly kin: KinChild[] = [];
   /** 1 where a kinematic platform's lane is (no standing spots there; anything crossing it is timed) */
@@ -89,11 +92,17 @@ export class Prober {
       if (k === 'spring') this.springs.push({ r: springRect(o), dir: springDir(o) });
       if (k === 'moving') { const r = moverBaseRect(o); this.movers.push({ ...r, dx: 0, dy: 0 }); } // boarding point at rest
       if (k === 'grave') {
+        this.floorMovers.add(this.movers.length);
         this.movers.push({ ...graveDirt(o), dx: 0, dy: 0, top: true });
         // touching the stone sets a ghost on you: routes treat it as a no-go so bots steer clear
         this.lethal.rects.push({ r: graveStone(o), owner: o.owner, src: o.id });
       }
     }
+    // the map's beach ball at rest is a stepping stone; the calm sea or lava lake is certain death
+    const ball = ballRect(world.map, 0);
+    if (ball) { this.floorMovers.add(this.movers.length); this.movers.push({ ...ball, dx: 0, dy: 0 }); }
+    const liq = world.map.fx?.liquid;
+    if (liq) this.lethal.rects.push({ r: { x: 0, y: liq.level + 6 - H, w: world.w * CELL, h: world.h * CELL }, owner: null, src: 'liquid' });
     const holes = this.holes;
     this.fans = fanFields(world);
     const fans = this.fans;
@@ -108,6 +117,7 @@ export class Prober {
         const f = fanAccel(fans, cx, cy, b.vx, b.vy);
         return f ? (h ? { ax: h.ax + f.ax, ay: h.ay + f.ay } : f) : h;
       } : undefined,
+      gravMul: world.map.fx?.lowGrav ? (b: Body) => gravityAt(world.map, b.x + W / 2, b.y + H / 2) : undefined,
     };
     this.lane = new Uint8Array(world.w * world.h);
     for (const o of world.kinematic) {
@@ -189,7 +199,11 @@ export class Prober {
     if (!w.inBounds(cx, cy) || !w.inBounds(cx, cy + 1)) return false;
     if (w.solidCell(cx, cy)) return false;
     const below = w.coll[w.idx(cx, cy + 1)];
-    const floor = w.solidCell(cx, cy + 1) || (below === C_ONEWAY && w.collDir[w.idx(cx, cy + 1)] === 0);
+    let floor = w.solidCell(cx, cy + 1) || (below === C_ONEWAY && w.collDir[w.idx(cx, cy + 1)] === 0);
+    if (!floor && this.floorMovers.size) {
+      const nx = cx * CELL + (CELL - W) / 2, top = (cy + 1) * CELL;
+      for (const i of this.floorMovers) { const m = this.movers[i]; if (Math.abs(m.y - top) < 0.5 && m.x < nx + W && m.x + m.w > nx) { floor = true; break; } }
+    }
     if (!floor) return false;
     if (this.lane[cy * w.w + cx]) return false; // a platform sweeps through here: nowhere to wait safely
     // head room: the cell above may be solid only if the body still fits (body is shorter than a cell)
@@ -298,7 +312,7 @@ export class Prober {
         done();
         return { from: fromKey, to: k.key, frames: f + 1, inputs: inputs.slice(0, f + 1), path: path.slice(0, (f + 1) * 2), kind: 'board', bbox: bbox(), wallJumps };
       }
-      if (f > 3 && b.grounded && Math.abs(b.vx) < 1 && b.groundMover < 0) {
+      if (f > 3 && b.grounded && Math.abs(b.vx) < 1 && (b.groundMover < 0 || this.floorMovers.has(b.groundMover))) {
         const land = this.landingNode(b);
         done();
         if (land === null || land === fromKey) return null;

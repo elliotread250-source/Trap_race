@@ -20,6 +20,8 @@ import { drawAmbient, drawSceneryBackground, hasScenery, paintSceneryTerrain, ty
 import { childCount, childRect, isKinematic, newMotion, pivotPx, referenceRects, shuttleDir, sweepOf, wheelAngle } from '../../shared/movers';
 import type { GameClient } from './game';
 import { drawDeathFx, type DeathFx } from './deathfx';
+import { drawBeachBall, drawGeysers, drawGust, drawLiquid, drawLowGrav, drawMapBackground, hasMapArt, paintMapCell, paintMapDecor } from './mapart';
+import { ballRect } from '../../shared/mapfx';
 import { settings } from './store';
 
 const C = CELL;
@@ -147,13 +149,24 @@ export class Renderer {
     if (hasScenery(map)) drawAmbient(this.ctx, map, this.view());
     this.drawZones(world, g);
     const sim = g.localSim() ?? g.race;
+    // map mechanics run on the race clock: the sim tick in local play, our render tick online, GO otherwise
+    const mtick = sim ? (g.localSim() ? sim.tick : g.renderTick()) : 0;
+    if (map.fx?.lowGrav) drawLowGrav(ctx, map, this.t);
     this.drawObjects(world, sim, g);
+    if (map.fx) {
+      const br = ballRect(map, mtick);
+      if (br) drawBeachBall(ctx, br, this.t);
+      const z = this.cam.zoom;
+      drawLiquid(ctx, map, mtick, this.t, this.cam.x - this.vw / 2 / z - 60, this.cam.x + this.vw / 2 / z + 60);
+      drawGeysers(ctx, map, mtick, this.t);
+    }
     if (g.isBuilding()) this.drawBuildOverlay(g, world);
     if (sim) this.drawRace(g, sim);
     if (this.deaths.length) { const now = performance.now() / 1000; this.deaths = this.deaths.filter(f => drawDeathFx(this.ctx, f, now, settings.reducedMotion)); }
     this.drawParticles(dt);
     if (settings.devOverlay) this.drawDev(g, world, sim);
     ctx.restore();
+    if (map.fx?.gusts && sim) drawGust(ctx, map, mtick, this.view());
     if (sim) this.drawOffscreenCoins(g, sim);
   }
 
@@ -215,6 +228,7 @@ export class Renderer {
 
   private drawBackground(map: MapDef) {
     if (hasScenery(map)) { drawSceneryBackground(this.ctx, map, this.view()); return; }
+    if (hasMapArt(map)) { drawMapBackground(this.ctx, map, this.view()); return; }
     const ctx = this.ctx, th = map.theme;
     const g = ctx.createLinearGradient(0, 0, 0, this.vh);
     g.addColorStop(0, th.skyTop); g.addColorStop(1, th.skyBottom);
@@ -282,6 +296,11 @@ export class Renderer {
     cv.width = world.w * C; cv.height = world.h * C;
     const ctx = cv.getContext('2d')!;
     if (hasScenery(world.map)) { paintSceneryTerrain(ctx, world); return cv; }
+    if (hasMapArt(world.map)) {
+      for (let y = 0; y < world.h; y++) for (let x = 0; x < world.w; x++) if (world.terrainAt(x, y)) paintMapCell(ctx, world, x, y);
+      paintMapDecor(ctx, world);
+      return cv;
+    }
     const th = world.map.theme;
     const solid = (x: number, y: number) => { const t = world.terrainAt(x, y); return t === 1 || t === 2; };
     for (let y = 0; y < world.h; y++) for (let x = 0; x < world.w; x++) {
@@ -935,6 +954,8 @@ export class Renderer {
       ctx.fillStyle = t === 2 ? th.ice ?? '#7fd8ff' : t === 3 ? th.oneway : th.terrain;
       ctx.fillRect(x * sx, y * sy + (t === 3 ? 0 : 0), Math.ceil(sx), t === 3 ? Math.ceil(sy / 3) : Math.ceil(sy));
     }
+    const liq = world.map.fx?.liquid;
+    if (liq) { ctx.fillStyle = liq.kind === 'lava' ? 'rgba(255,90,20,.85)' : 'rgba(40,160,220,.8)'; ctx.fillRect(0, (liq.level / C) * sy, canvas.width, canvas.height); }
     ctx.fillStyle = '#ff5e8a'; const f = world.map.finish; ctx.fillRect(f.x * sx, f.y * sy, f.w * sx, f.h * sy);
     ctx.fillStyle = '#50ffb4'; const s = world.map.spawn; ctx.fillRect(s.x * sx, s.y * sy, s.w * sx, s.h * sy);
   }

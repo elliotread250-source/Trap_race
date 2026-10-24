@@ -11,6 +11,7 @@ import { settings, saveSettings } from './store';
 import { animatePreviews, UI } from './ui';
 import type { LocalTransport } from './net';
 import { applyPlacement, checkPlacement, makeObject } from '../../shared/placement';
+import { gustIn, tsunamiIn } from '../../shared/mapfx';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const root = document.getElementById('ui')!;
@@ -25,6 +26,7 @@ ui.onZoom = () => { renderer.buildZoom = renderer.buildZoom > 1 ? 1 : 2.2; };
 
 // ------------------------------------------------ sound and effects from game events
 let lastWarn = 0;
+let alarmed = '';
 game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
   const sim = game.localSim() ?? game.race;
   const colorOf = (id: string) => PLAYER_COLORS[(game.member(id)?.color ?? 0) % PLAYER_COLORS.length];
@@ -226,6 +228,16 @@ function loop(now: number) {
   renderer.frame(game, dt);
   ui.render();
   animatePreviews(now / 1000);
+  // map hazard alarms: a siren before every tsunami, a howl before every sandstorm gust
+  {
+    const sim = game.localSim() ?? (game.phase === 'race' ? game.race : null);
+    const fx = game.world?.map.fx;
+    if (sim && fx) {
+      const tk = sim.tick;
+      if (fx.tsunami) { const tin = tsunamiIn(fx, tk); const key = Math.floor((tk / 60 - fx.tsunami.start) / (fx.tsunami.on + fx.tsunami.off)); if (tin !== null && tin <= fx.tsunami.warn && alarmed !== `t${key}`) { alarmed = `t${key}`; sfx.siren(); } }
+      if (fx.gusts) { const gin = gustIn(game.world!.map, tk); const key = Math.floor((tk / 60 - fx.gusts.start) / fx.gusts.period); if (gin !== null && gin <= fx.gusts.warn && alarmed !== `g${key}`) { alarmed = `g${key}`; sfx.howl(); } }
+    }
+  }
   // timed-trap warning tick for the local player's nearby sniper warnings
   if (game.race && game.phase === 'race' && now - lastWarn > 2500 && [...(game.world?.objects.values() ?? [])].some(o => getItem(o.item).kind === 'sniper')) {
     const t = (game.race.tick / 60) % 2.5;

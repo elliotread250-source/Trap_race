@@ -52,6 +52,8 @@ export interface PhysEnv {
   accel?: (b: Body) => { ax: number; ay: number } | null;
   speedMul: number;
   jumpMul: number;
+  /** gravity scale at the body (low-gravity zones); absent = 1 */
+  gravMul?: (b: Body) => number;
 }
 
 export function newBody(x: number, y: number): Body {
@@ -337,7 +339,7 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
   if (dir !== 0) b.facing = dir;
 
   // gravity and external pull
-  b.vy += PHYS.gravity * dt;
+  b.vy += PHYS.gravity * dt * (env.gravMul ? env.gravMul(b) : 1);
   if (env.accel) {
     const a = env.accel(b);
     if (a) {

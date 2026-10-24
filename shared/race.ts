@@ -7,6 +7,7 @@ import {
   moverBaseRect, onMover, ovalHitsRect, pendulumPos, rspikeParts, rspikeState, sawPos, springDir, springRect, staticLethal, type StaticLethal,
 } from './hazards';
 import { getItem, PLANE_PASSES, type PowerType } from './items';
+import { ballRect, geyserRects, gravityAt, gustAt, inLiquid, liquidSurface, tsunamiUp } from './mapfx';
 import { fanAccel, fanDist, fanFields, ghostOrbit, graveDirt, graveStone, planeDir, planeSpawnRect, type FanField } from './fans';
 import { childCount, childId, childRect } from './movers';
 import { bodyCenter, bodyRect, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
@@ -80,6 +81,8 @@ export interface SimMover {
   fixed?: boolean;
   /** ice laid on this moving platform */
   ice?: boolean;
+  /** the map's floating beach ball (rides the liquid surface) */
+  ball?: boolean;
 }
 
 /** hp counts down per interaction (new landing, new wall-slide contact, unique projectile impact); 0 means broken for the round. */
@@ -192,6 +195,8 @@ export class RaceSim {
       if (k === 'ice' && o.attach) for (const m of this.movers) if (m.o.id === o.attach && !m.plane && !m.fixed) m.ice = true;
     }
     this.fans = fanFields(world);
+    const br = ballRect(world.map, 0);
+    if (br) this.movers.push({ id: 'mapball', o: { id: 'mapball', item: 'block_1x1', owner: null, prov: 'map', x: Math.floor(br.x / CELL), y: Math.floor(br.y / CELL), rot: 0, variant: 0, cells: [], attach: null, round: 0 }, child: -2, hz: null, rect: br, prev: { ...br }, ball: true });
     this.lethal = staticLethal(world);
     for (const o of world.objects.values()) {
       if (getItem(o.item).kind !== 'wire') continue;
@@ -212,16 +217,18 @@ export class RaceSim {
     return this.movers.map(m => {
       let r: Rect, pr: Rect;
       if (m.plane) { r = planeRectAt(m.plane, tick); pr = planeRectAt(m.plane, tick - 1); }
+      else if (m.ball) { r = ballRect(this.world.map, tick)!; pr = ballRect(this.world.map, tick - 1)!; }
       else if (m.fixed) { r = m.rect; pr = m.rect; }
       else if (m.hz) { const l = legacy ? legacy(m) : { rect: m.rect, prev: m.prev }; r = l.rect; pr = l.prev; }
       else { r = childRect(m.o, m.child, tick); pr = childRect(m.o, m.child, tick - 1); }
-      return { x: r.x, y: r.y, w: r.w, h: r.h, dx: r.x - pr.x, dy: r.y - pr.y, id: m.id, soft: !!m.plane, top: !!m.fixed, ice: !!m.ice };
+      return { x: r.x, y: r.y, w: r.w, h: r.h, dx: r.x - pr.x, dy: r.y - pr.y, id: m.id, soft: !!m.plane || !!m.ball, top: !!m.fixed, ice: !!m.ice };
     });
   }
 
   /** Where a mover is drawn or tested at a tick (kinematic bodies exactly, planes extrapolated, the rest as mirrored). */
   moverRectAt(m: SimMover, tick: number): Rect {
     if (m.plane) return planeRectAt(m.plane, tick);
+    if (m.ball) return ballRect(this.world.map, tick)!;
     if (m.fixed || m.hz) return m.rect;
     return childRect(m.o, m.child, tick);
   }
@@ -247,7 +254,7 @@ export class RaceSim {
   };
 
   moverList(): Mover[] {
-    return this.movers.map(m => ({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h, dx: m.rect.x - m.prev.x, dy: m.rect.y - m.prev.y, id: m.id, soft: !!m.plane, top: !!m.fixed, ice: !!m.ice }));
+    return this.movers.map(m => ({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h, dx: m.rect.x - m.prev.x, dy: m.rect.y - m.prev.y, id: m.id, soft: !!m.plane || !!m.ball, top: !!m.fixed, ice: !!m.ice }));
   }
 
   /** Physics environment for one player (shared with client prediction). */
@@ -256,13 +263,17 @@ export class RaceSim {
       world: this.world, isSolid: this.isSolid, movers,
       speedMul: p.effects.speed > 0 ? POWER.speedMul : 1,
       jumpMul: p.effects.jump > 0 ? POWER.jumpMul : 1,
-      accel: this.holes.length || this.fans.length ? (b: Body) => this.fieldPull(b, p) : undefined,
+      accel: this.holes.length || this.fans.length || this.world.map.fx?.gusts ? (b: Body) => this.fieldPull(b, p) : undefined,
+      gravMul: this.world.map.fx?.lowGrav ? (b: Body) => gravityAt(this.world.map, b.x + W / 2, b.y + H / 2) : undefined,
     };
   }
 
   /** Black holes plus fan wind on a player's body. */
   fieldPull(b: Body, p: RacePlayer | null): { ax: number; ay: number } | null {
-    const h = this.holes.length ? this.holePull(b, p) : null;
+    let h = this.holes.length ? this.holePull(b, p) : null;
+    // sandstorm gusts shove everyone outside the start and finish safety zones
+    const gust = gustAt(this.world.map, this.tick);
+    if (gust) { const c = bodyCenter(b); if (!this.world.inProtectedPx(c.x, c.y)) h = { ax: (h?.ax ?? 0) + gust, ay: h?.ay ?? 0 }; }
     if (!this.fans.length) return h;
     const c = bodyCenter(b);
     if (this.world.inProtectedPx(c.x, c.y)) return h;
@@ -340,7 +351,7 @@ export class RaceSim {
         h.phase += DT * (laserInOff(h.phase) ? slow : 1);
       } else h.phase += DT * (h.slowable ? slow : 1);
     }
-    for (const m of this.movers) { if (m.plane || m.fixed) continue; m.prev = m.rect; m.rect = m.hz ? moverRect(m.o, m.hz.phase, m.hz.pathLen) : childRect(m.o, m.child, this.tick); }
+    for (const m of this.movers) { if (m.ball) { m.prev = m.rect; m.rect = ballRect(this.world.map, this.tick)!; continue; } if (m.plane || m.fixed) continue; m.prev = m.rect; m.rect = m.hz ? moverRect(m.o, m.hz.phase, m.hz.pathLen) : childRect(m.o, m.child, this.tick); }
     this.updatePlanes();
     const movers = this.moverList();
 
@@ -780,9 +791,19 @@ export class RaceSim {
   }
 
   private checkHazards() {
+    const map = this.world.map;
+    const geysers = map.fx?.geysers ? geyserRects(map, this.tick) : [];
     for (const p of this.players) {
       if (p.status !== 'racing') continue;
       const br = bodyRect(p.body);
+      // the sea, the tsunami and lava: no shield saves you from drowning (like a fall)
+      if (map.fx?.liquid && inLiquid(map, this.tick, br)) {
+        const lava = map.fx.liquid.kind === 'lava';
+        const wave = !lava && tsunamiUp(map, this.tick) && br.y + br.h < map.fx.liquid.level;
+        this.kill(p, null, lava ? 'lava' : wave ? 'tsunami' : 'drown', null);
+        continue;
+      }
+      if (geysers.some(r => rectsOverlap(br, r))) { this.lethalHit(p, null, 'geyser', null); if (p.status !== 'racing') continue; }
       for (const l of this.lethal.rects) if (rectsOverlap(br, l.r)) { this.lethalHit(p, l.owner, getItem(this.world.objects.get(l.src)!.item).kind, l.src); break; }
       if (p.status !== 'racing') continue;
       for (const l of this.lethal.ovals) if (ovalHitsRect(l.ov, br)) { this.lethalHit(p, l.owner, 'oval', l.src); break; }
@@ -900,6 +921,7 @@ export class RaceSim {
     this.slowTicks = s.slow;
     s.hz.forEach((ph, i) => { if (this.hz[i]) this.hz[i].phase = ph; });
     for (const m of this.movers) {
+      if (m.ball) { m.rect = ballRect(this.world.map, this.tick)!; m.prev = ballRect(this.world.map, this.tick - 1)!; continue; }
       if (m.plane || m.fixed) continue;
       if (m.hz) { m.rect = moverRect(m.o, m.hz.phase, m.hz.pathLen); m.prev = { ...m.rect }; }
       else { m.rect = childRect(m.o, m.child, this.tick); m.prev = childRect(m.o, m.child, this.tick - 1); }

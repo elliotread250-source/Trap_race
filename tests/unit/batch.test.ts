@@ -623,3 +623,102 @@ describe('phase 5: multiplayer sync of new items', () => {
     expect(client.moverRectAt(cp[0], snap.tick + 30).x).toBeCloseTo(sp[0].rect.x + NEWITEMS.planeSpeed / 2, 0);
   });
 });
+
+// ================================================================ Phase 7
+import { World } from '../../shared/world';
+import { NavGraph } from '../../shared/nav';
+import { MAP_LIST } from '../../shared/maps';
+import { ballRect, gravityAt, gustAt, liquidSurface, tsunamiIn, tsunamiLevel } from '../../shared/mapfx';
+
+describe('phase 7: new maps', () => {
+  it('adds Tropical Island and three more large themed maps, all selectable, each with its own mechanic and a route to the flag', () => {
+    const ids = MAP_LIST.map(m => m.id);
+    for (const id of ['tropical', 'magma', 'orbital', 'dunes']) {
+      expect(ids).toContain(id);
+      const w = new World(id);
+      expect(w.map.size).toBe('large');
+      expect(w.map.fx).toBeTruthy();
+      expect(new NavGraph(w).reach(false).finish).toBe(true);
+    }
+    const themes = new Set(['tropical', 'magma', 'orbital', 'dunes'].map(id => new World(id).map.theme.skyTop));
+    expect(themes.size).toBe(4);
+  });
+
+  it('tropical: tsunami 15 s in, up 15 s, down 15 s, repeating; rises to just below the canopy; warns beforehand', () => {
+    const m = new World('tropical').map, fx = m.fx!;
+    expect(tsunamiLevel(fx, 14 * 60)).toBe(0);
+    expect(tsunamiIn(fx, 12 * 60)).toBeCloseTo(3, 5);
+    expect(tsunamiLevel(fx, 22 * 60)).toBe(1);
+    expect(tsunamiLevel(fx, 31 * 60)).toBe(0);
+    expect(tsunamiLevel(fx, 52 * 60)).toBe(1); // 45 s + 7: the second wave
+    const canopyTop = 18 * CELL; // lowest canopy
+    expect(liquidSurface(m, 22 * 60)!).toBeGreaterThan(canopyTop); // just below it
+    expect(liquidSurface(m, 22 * 60)!).toBeLessThan(canopyTop + CELL);
+  });
+
+  it('tropical: touching the sea drowns; standing below the waterline when the tsunami hits kills, on a canopy you live; items survive it', () => {
+    const w = new World('tropical');
+    put(w, 'block_1x1', 30, 33); // a placed item on the beach
+    const sim = new RaceSim(w, ['sea', 'beach', 'tree'], { roundKey: 'ts', maxTicks: 60 * 60 });
+    at(sim, 'sea', 14 * C, 39 * C);
+    run(sim, 3);
+    expect(sim.player('sea')!.cause).toBe('drown');
+    at(sim, 'beach', 32 * C, 38 * C - H);
+    at(sim, 'tree', 62 * C, 18 * C - H);
+    const ev = run(sim, 20 * 60);
+    expect(ev.some(e => e.type === 'death' && e.pid === 'beach' && e.cause === 'tsunami')).toBe(true);
+    expect(sim.player('tree')!.status).toBe('racing');
+    expect(sim.world.objects.size).toBe(w.objects.size); // nothing washed away
+  });
+
+  it('tropical: the 2x2 beach ball floats on the sea, rides up with the tsunami and can be stood on', () => {
+    const m = new World('tropical').map;
+    const calm = ballRect(m, 0)!, wave = ballRect(m, 22 * 60)!;
+    expect(calm).toMatchObject({ w: 2 * C, h: 2 * C });
+    expect(calm.y + calm.h).toBeGreaterThan(liquidSurface(m, 0)!);
+    expect(wave.y).toBeLessThan(calm.y - 15 * C);
+    const sim = new RaceSim(new World('tropical'), ['a'], { roundKey: 'ball', maxTicks: 60 * 60 });
+    at(sim, 'a', calm.x + 30, calm.y - H - 20);
+    run(sim, 40);
+    expect(sim.player('a')!.body.grounded).toBe(true);
+    run(sim, 21 * 60);
+    expect(sim.player('a')!.status).toBe('racing'); // safe on the ball through the tsunami
+  });
+
+  it('magma: lava kills and geysers erupt on their timers; orbital: low gravity in the bays; dunes: gusts blow players back', () => {
+    const mg = new World('magma');
+    const sim = new RaceSim(mg, ['a'], { roundKey: 'mg', maxTicks: 60 * 60 });
+    at(sim, 'a', 12 * C, 34 * C);
+    run(sim, 30);
+    expect(sim.player('a')!.cause).toBe('lava');
+    const g = mg.map.fx!.geysers![0];
+    const s2 = new RaceSim(mg, ['a'], { roundKey: 'mg2', maxTicks: 60 * 60 });
+    let killed = false;
+    for (let i = 0; i < 300 && !killed; i++) { at(s2, 'a', g.x * C + 10, 20 * C); s2.player('a')!.body.vy = 0; const ev = run(s2, 1); killed = ev.some(e => e.type === 'death' && e.cause === 'geyser'); }
+    expect(killed).toBe(true);
+    const ob = new World('orbital').map;
+    expect(gravityAt(ob, 16 * C, 20 * C)).toBeCloseTo(0.4);
+    expect(gravityAt(ob, 5 * C, 20 * C)).toBe(1);
+    const du = new World('dunes');
+    expect(gustAt(du.map, 7 * 60)).toBe(0);
+    expect(gustAt(du.map, 10 * 60)).toBeLessThan(-1000);
+    const s3 = new RaceSim(du, ['a'], { roundKey: 'du', maxTicks: 60 * 60 });
+    at(s3, 'a', 60 * C, 26 * C);
+    run(s3, 8 * 60 + 30);
+    const x0 = s3.player('a')!.body.x;
+    run(s3, 90);
+    expect(s3.player('a')!.body.x).toBeLessThan(x0 - 30);
+  });
+
+  it('every new map works with every item and sandbox-style placement (placements accepted somewhere on each map)', () => {
+    for (const id of ['tropical', 'magma', 'orbital', 'dunes']) {
+      const w = new World(id);
+      const items = ['block_1x1', 'planemaker', 'fan', 'grave', 'dart_turret', 'ice_3', 'saw', 'wheel', 'shuttle', 'crossbow'];
+      for (const it of items) {
+        let ok = false;
+        for (let y = 2; y < w.h - 2 && !ok; y++) for (let x = 10; x < w.w - 10 && !ok; x += 3) if (checkPlacement(w, { item: it, x, y, rot: 0, variant: 0 }).ok) ok = true;
+        expect(ok, `${it} on ${id}`).toBe(true);
+      }
+    }
+  });
+});

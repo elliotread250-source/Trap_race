@@ -1,6 +1,7 @@
 // Base maps as structured data: terrain rectangles in cells, zones, and decoration that never collides.
 // Maps may only author barbed wire as a trap. Everything here is permanent and indestructible.
 import type { Rect } from './grid';
+import type { MapFx } from './mapfx';
 
 export type TerrainType = 'solid' | 'ice' | 'oneway';
 
@@ -43,6 +44,8 @@ export interface MapDef {
   size?: 'standard' | 'large';
   /** Purely visual material zones (leaves, bark, crystal...) for the renderer; collision is always the terrain grid. */
   materials?: { x: number; y: number; w: number; h: number; m: string }[];
+  /** map mechanics: liquid, tsunami, geysers, low gravity, gusts, floating ball (see mapfx.ts) */
+  fx?: MapFx;
 }
 
 const border = (w: number, h: number) => [
@@ -356,6 +359,134 @@ const mountain: MapDef = {
   stages: [{ x: 0, y: 0, w: 33, h: 38 }, { x: 33, y: 0, w: 24, h: 38 }, { x: 57, y: 0, w: 14, h: 38 }, { x: 71, y: 0, w: 18, h: 38 }, { x: 89, y: 0, w: 27, h: 38 }],
 };
 
+// Tropical Island. Start on a boat out at sea; the water kills. Hop the floating beach ball to the shore, cross the
+// beach (chairs, a picnic, parasols) and climb the jungle trees: the flag is on the last canopy. Fifteen seconds into
+// the round a tsunami floods everything below the canopies for fifteen seconds, then ebbs for fifteen, and so on.
+// The ceiling is high, so a tall enough tower of blocks is also a way to ride it out.
+const tropicalTree = (g: { solid: (x: number, y: number, w: number, h: number) => void; oneway: (x: number, y: number, w: number) => void }, tx: number, top: number, cx: number, cw: number) => {
+  g.solid(tx, top + 2, 2, 38 - (top + 2)); // trunk down to the jungle floor
+  g.oneway(cx, top, cw); // leafy canopy: jump up through it, stand on it
+  for (let r = 36; r >= top + 2; r -= 2) g.oneway(tx - 3, r, 3); // vine rungs up the left of the trunk
+};
+const tropical: MapDef = {
+  id: 'tropical',
+  name: 'Tropical Island',
+  blurb: 'Leap from the boat to the beach ball to the shore, then climb the jungle trees before the tsunami hits (15 s in, every 30 s).',
+  w: 120, h: 48, size: 'large', raceS: 120,
+  terrain: paint(120, 48, g => {
+    g.solid(1, 38, 11, 1); g.solid(2, 39, 9, 1); g.solid(1, 35, 2, 3); // the boat: deck, hull, wheelhouse
+    g.solid(22, 38, 40, 10); // the beach
+    g.solid(28, 37, 2, 1); g.solid(28, 36, 1, 1); g.solid(41, 37, 2, 1); g.solid(41, 36, 1, 1); // beach chairs (seat + backrest)
+    g.solid(35, 37, 1, 1); // the picnic basket
+    g.oneway(45, 34, 3); g.oneway(51, 33, 3); // beach parasols
+    g.solid(56, 37, 4, 1); g.solid(58, 36, 2, 1); // the dune at the edge of the jungle
+    g.solid(62, 38, 57, 10); // jungle floor
+    tropicalTree(g, 64, 18, 60, 10); tropicalTree(g, 76, 17, 72, 10); tropicalTree(g, 88, 16, 84, 10); tropicalTree(g, 100, 16, 96, 8); tropicalTree(g, 111, 16, 105, 13);
+  }),
+  spawn: { x: 3, y: 35, w: 4, h: 3 },
+  finish: { x: 110, y: 13, w: 3, h: 3 },
+  wires: [{ x: 58, y: 35, rot: 0, len: 2 }], // sea urchins washed up on the dune
+  decor: [
+    { kind: 'sun', x: 90, y: 2, layer: 0 }, { kind: 'mast', x: 6, y: 30, layer: 1 }, { kind: 'parasolpole', x: 46, y: 35, layer: 1 }, { kind: 'parasolpole', x: 52, y: 34, layer: 1 },
+    { kind: 'blanket', x: 33, y: 37, w: 4, layer: 1 }, { kind: 'palms', x: 0, y: 0, w: 120, h: 48, layer: 0 },
+  ],
+  materials: [
+    { x: 1, y: 35, w: 11, h: 5, m: 'boat' }, { x: 22, y: 38, w: 40, h: 10, m: 'sand' }, { x: 56, y: 36, w: 4, h: 2, m: 'sand' },
+    { x: 28, y: 36, w: 2, h: 2, m: 'chair' }, { x: 41, y: 36, w: 2, h: 2, m: 'chair' }, { x: 35, y: 37, w: 1, h: 1, m: 'basket' },
+    { x: 45, y: 34, w: 3, h: 1, m: 'parasol' }, { x: 51, y: 33, w: 3, h: 1, m: 'parasol2' }, { x: 62, y: 38, w: 57, h: 10, m: 'jungle' },
+    { x: 60, y: 16, w: 58, h: 3, m: 'canopy' }, { x: 64, y: 18, w: 2, h: 20, m: 'trunk' }, { x: 76, y: 18, w: 2, h: 20, m: 'trunk' }, { x: 88, y: 18, w: 2, h: 20, m: 'trunk' },
+    { x: 100, y: 18, w: 2, h: 20, m: 'trunk' }, { x: 111, y: 18, w: 2, h: 20, m: 'trunk' }, { x: 57, y: 18, w: 60, h: 20, m: 'vines' },
+  ],
+  theme: { skyTop: '#2fb6ff', skyBottom: '#bff3ff', far: '#3aa58a', mid: '#2b8a6e', terrain: '#e9cf8f', terrainEdge: '#fff1c2', terrainDark: '#b98f4f', accent: '#ff7a59', oneway: '#3fb54f', accent2: '#1f8a5c', accent3: '#ffd25e', light: '#fffbe0' },
+  build: { x: 1, y: 1, w: 118, h: 46 },
+  parTime: '15–25 s',
+  fx: {
+    liquid: { kind: 'water', level: 39 * 48 + 30 },
+    tsunami: { start: 15, on: 15, off: 15, rise: 1.6, high: 910, warn: 3 },
+    ball: { x: 16, w: 2, h: 2, sink: 18 },
+  },
+};
+
+// Magma Works. Basalt columns rise out of a lava lake; lava geysers erupt from the gaps on their own timers, bubbling
+// just before they blow. Read the rhythm and jump between eruptions.
+const magmaIslands: [number, number, number][] = [[14, 30, 4], [21, 29, 3], [27, 30, 4], [34, 28, 3], [40, 27, 4], [47, 28, 3], [53, 26, 4], [60, 27, 3], [66, 25, 4], [73, 26, 3], [79, 24, 4], [86, 25, 3], [92, 23, 4], [99, 24, 3], [105, 22, 4]];
+const magma: MapDef = {
+  id: 'magma',
+  name: 'Magma Works',
+  blurb: 'Hop the basalt columns over a lava lake. Geysers erupt from the gaps on a rhythm: watch them bubble, then go.',
+  w: 120, h: 40, size: 'large', raceS: 120,
+  terrain: paint(120, 40, g => {
+    g.solid(1, 31, 10, 9); // the spawn crag
+    for (const [x, y, w] of magmaIslands) g.solid(x, y, w, 40 - y); // basalt columns down into the lake
+    g.solid(111, 21, 8, 19); // the summit forge
+    g.solid(44, 1, 14, 12); g.solid(48, 13, 6, 3); g.solid(82, 1, 12, 10); // smoke-stained rock overhead
+  }),
+  spawn: { x: 3, y: 28, w: 4, h: 3 },
+  finish: { x: 113, y: 18, w: 3, h: 3 },
+  wires: [{ x: 39, y: 30, rot: 3, len: 2 }], // obsidian shards low on a column's face
+  decor: [{ kind: 'embers', x: 0, y: 0, w: 120, h: 40, layer: 2 }, { kind: 'volcano', x: 0, y: 0, w: 120, h: 40, layer: 0 }],
+  materials: [{ x: 0, y: 0, w: 120, h: 40, m: 'basalt' }, { x: 111, y: 21, w: 8, h: 19, m: 'forge' }],
+  theme: { skyTop: '#1a0606', skyBottom: '#6b1a0c', far: '#3a0d08', mid: '#561a10', terrain: '#3b2f33', terrainEdge: '#ff7a2f', terrainDark: '#1a1214', accent: '#ffb347', oneway: '#8a5a3c', accent2: '#ff4a1c', accent3: '#ffd25e', light: '#ffd9a0' },
+  build: { x: 1, y: 1, w: 118, h: 39 },
+  parTime: '30–45 s',
+  fx: {
+    liquid: { kind: 'lava', level: 35 * 48 + 24 },
+    geysers: [12, 19, 32, 38, 51, 58, 71, 77, 90, 97, 103, 109].map((x, i) => ({ x, top: 15, period: 4.5, on: 1.3, phase: (i * 1.7) % 4.5, warn: 0.9 })),
+  },
+};
+
+// Orbital Lab. A space station of modules strung over the void. The gaps between them are zero-g bays (gravity at 40%):
+// a sprint jump floats right across. Miss and you drift down into nothing.
+const orbitalModules: [number, number, number][] = [[1, 30, 12], [22, 30, 10], [41, 28, 9], [59, 29, 8], [76, 27, 9], [94, 28, 8], [106, 27, 9]];
+const orbital: MapDef = {
+  id: 'orbital',
+  name: 'Orbital Lab',
+  blurb: 'Float through the zero-g bays between station modules. Sprint before you jump: in low gravity you sail across.',
+  w: 116, h: 40, size: 'large', raceS: 120,
+  terrain: paint(116, 40, g => {
+    g.solid(1, 1, 114, 6); // the station's outer hull overhead
+    for (const [x, y, w] of orbitalModules) g.solid(x, y, w, 40 - y);
+    g.solid(26, 27, 1, 3); g.solid(45, 25, 2, 1); g.solid(62, 26, 1, 3); g.solid(80, 24, 2, 1); g.solid(97, 25, 1, 3); // consoles and crates
+    g.oneway(23, 24, 3); g.oneway(78, 21, 3);
+  }),
+  spawn: { x: 3, y: 27, w: 4, h: 3 },
+  finish: { x: 109, y: 24, w: 3, h: 3 },
+  wires: [{ x: 58, y: 31, rot: 3, len: 2 }], // a sparking cable low on a module's side
+  decor: [{ kind: 'stars', x: 0, y: 0, w: 116, h: 40, layer: 0 }, { kind: 'planet', x: 70, y: 8, layer: 0 }],
+  materials: [{ x: 0, y: 0, w: 116, h: 40, m: 'hull' }],
+  theme: { skyTop: '#05071a', skyBottom: '#1a1f4a', far: '#151a3a', mid: '#20285a', terrain: '#7c87a8', terrainEdge: '#5ef2ff', terrainDark: '#2b3150', accent: '#5ef2ff', oneway: '#9ab0ff', accent2: '#ff6fd8', accent3: '#ffd25e', light: '#d8f6ff' },
+  build: { x: 1, y: 7, w: 114, h: 33 },
+  parTime: '25–40 s',
+  fx: {
+    lowGrav: [[13, 9], [32, 9], [50, 9], [67, 9], [85, 9]].map(([x, w]) => ({ x: x - 2, y: 7, w: w + 4, h: 33, mul: 0.4 })),
+  },
+};
+
+// Sandstorm Dunes. Rolling dunes, sinkholes and cactus patches under a hard sun. Every twelve seconds a sandstorm gust
+// howls in from the east for a few seconds and shoves everyone back: brace on the ground or get blown into a pit.
+const dunes: MapDef = {
+  id: 'dunes',
+  name: 'Sandstorm Dunes',
+  blurb: 'Cross the dunes and sinkholes. Every 12 s a sandstorm gust blows you back toward the start: brace, or ride it out in shelter.',
+  w: 120, h: 36, size: 'large', raceS: 120,
+  terrain: paint(120, 36, g => {
+    g.solid(1, 30, 118, 6); // the desert floor
+    g.blob(15, 31, 7, 3); g.blob(60, 31, 6, 2); g.blob(92, 31, 8, 3); // dunes
+    g.clear(28, 30, 4, 6); g.clear(52, 30, 5, 6); g.clear(78, 30, 4, 6); // sinkholes
+    g.solid(40, 26, 6, 4); g.solid(66, 25, 3, 5); g.solid(84, 26, 5, 4); // mesas and a rock pillar
+    g.solid(106, 24, 13, 12); // the oasis mesa
+  }),
+  spawn: { x: 3, y: 27, w: 4, h: 3 },
+  finish: { x: 111, y: 21, w: 3, h: 3 },
+  wires: [{ x: 35, y: 29, rot: 0, len: 2 }, { x: 47, y: 29, rot: 0, len: 1 }, { x: 74, y: 29, rot: 0, len: 2 }, { x: 101, y: 29, rot: 0, len: 2 }], // cactus patches
+  decor: [{ kind: 'sandsun', x: 80, y: 3, layer: 0 }, { kind: 'dunesbg', x: 0, y: 0, w: 120, h: 36, layer: 0 }],
+  materials: [{ x: 0, y: 0, w: 120, h: 36, m: 'desert' }, { x: 106, y: 24, w: 13, h: 12, m: 'mesa' }, { x: 40, y: 26, w: 6, h: 4, m: 'mesa' }, { x: 84, y: 26, w: 5, h: 4, m: 'mesa' }, { x: 66, y: 25, w: 3, h: 5, m: 'mesa' }],
+  theme: { skyTop: '#ff9f43', skyBottom: '#ffe3a3', far: '#e8a86a', mid: '#d38b4f', terrain: '#e2b36f', terrainEdge: '#fff0c4', terrainDark: '#a8743e', accent: '#2f8f4e', oneway: '#b98a52', accent2: '#c0562e', accent3: '#ffd25e', light: '#fff4c4' },
+  build: { x: 1, y: 1, w: 118, h: 35 },
+  parTime: '25–40 s',
+  fx: { gusts: { start: 8, period: 12, on: 3.5, accel: -1300, warn: 2 } },
+};
+
 /** Test lab: flat floor, a 12-cell wall, a pit. Not offered in the lobby; used by automated tests. */
 const lab: MapDef = {
   id: 'lab', name: 'Test Lab', blurb: 'Automated test arena.', w: 40, h: 20,
@@ -379,8 +510,8 @@ const labWheel: MapDef = {
   theme: rooftop.theme, build: { x: 1, y: 1, w: 42, h: 21 }, parTime: '-',
 };
 
-export const MAPS: Record<string, MapDef> = { rooftop, factory, forest, frost, oak, mountain, lab, lab_gap: labGap, lab_wheel: labWheel };
-export const MAP_LIST: readonly MapDef[] = [oak, mountain, rooftop, factory, forest, frost];
+export const MAPS: Record<string, MapDef> = { rooftop, factory, forest, frost, oak, mountain, tropical, magma, orbital, dunes, lab, lab_gap: labGap, lab_wheel: labWheel };
+export const MAP_LIST: readonly MapDef[] = [oak, mountain, tropical, magma, orbital, dunes, rooftop, factory, forest, frost];
 export function getMap(id: string): MapDef { return MAPS[id] ?? rooftop; }
 /** Lobby-selectable maps only (test arenas are never offered or accepted). */
 export function selectableMap(id: string | undefined): boolean { return !!id && MAP_LIST.some(m => m.id === id); }

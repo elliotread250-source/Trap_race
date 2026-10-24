@@ -3,6 +3,7 @@ import { EMOTES, fmtPts, GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIME
 import { getItem, ITEM_LIST } from '../../shared/items';
 import { MAP_LIST } from '../../shared/maps';
 import { World } from '../../shared/world';
+import { gustIn, tsunamiIn } from '../../shared/mapfx';
 import { drawCardPreview, drawCharacter, PLAYER_COLORS, SKINS } from './art';
 import { applyVolumes, sfx, unlockAudio } from './audio';
 import type { GameClient } from './game';
@@ -691,7 +692,12 @@ export class UI {
       e.round.textContent = `Sandbox · ${g.world?.map.name ?? ''}`;
       e.timer.classList.add('hidden');
       e.score.textContent = `Flags ${g.sandbox.finishes} · Respawns ${g.sandbox.deaths}`;
-      e.standings.classList.add('hidden'); e.banner.classList.add('hidden'); e.count.classList.add('hidden'); e.spect.classList.add('hidden');
+      e.standings.classList.add('hidden'); e.count.classList.add('hidden'); e.spect.classList.add('hidden');
+      const fx = g.world?.map.fx, tk = g.sandbox.sim.tick;
+      let hz = '';
+      if (fx?.tsunami && !g.sandbox.placing) { const tin = tsunamiIn(fx, tk); hz = tin === null ? 'TSUNAMI! Stay above the water!' : tin <= fx.tsunami.warn ? `TSUNAMI INCOMING in ${Math.ceil(tin)}!` : ''; }
+      if (fx?.gusts && !g.sandbox.placing) { const gin = gustIn(g.world!.map, tk); hz = gin === null ? 'SANDSTORM! Brace yourself!' : gin <= fx.gusts.warn ? `Sandstorm incoming in ${Math.ceil(gin)}…` : ''; }
+      e.banner.textContent = hz; e.banner.classList.toggle('hidden', !hz); e.banner.classList.toggle('danger', !!hz);
       return;
     }
     e.standings.classList.remove('hidden');
@@ -735,7 +741,18 @@ export class UI {
     // banner
     let banner = '';
     let danger = false;
+    // map hazard warnings take priority while racing
+    const fx = g.world?.map.fx;
+    const lsim = g.localSim() ?? g.race;
+    const htick = lsim ? (g.localSim() ? lsim.tick : g.renderTick()) : 0;
+    const racingNow = (g.phase === 'race' && !!g.race) || !!g.localSim();
+    let hazard = '';
+    if (fx && racingNow) {
+      if (fx.tsunami) { const tin = tsunamiIn(fx, htick); if (tin === null) hazard = 'TSUNAMI! Stay above the water!'; else if (tin <= fx.tsunami.warn) hazard = `TSUNAMI INCOMING in ${Math.ceil(tin)}: climb above the canopy line!`; }
+      if (fx.gusts) { const gin = gustIn(g.world!.map, htick); if (gin === null) hazard = 'SANDSTORM! Brace yourself!'; else if (gin <= fx.gusts.warn) hazard = `Sandstorm incoming in ${Math.ceil(gin)}…`; }
+    }
     if (g.status === 'lost' || g.status === 'connecting') { banner = 'Connection lost. Reconnecting… your avatar is still in the race.'; danger = true; }
+    else if (hazard) { banner = hazard; danger = true; }
     else if (g.me?.spectator) banner = 'Spectating: you will join the next match.';
     else if (g.phase === 'race' && p && p.status === 'dead') banner = `Eliminated. Spectating until the next round.`;
     else if (g.phase === 'race' && p && p.status === 'finished') banner = `Finished! ${(p.finishTick / 60).toFixed(2)}s · spectating`;

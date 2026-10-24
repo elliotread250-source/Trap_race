@@ -6,6 +6,7 @@ import { cellCenter, laserBeamRect, laserState, pendulumPos, rspikeParts, rspike
 import { getItem, ITEMS, type ItemDef } from '../shared/items';
 import { FINISH, isMoverKey, moverKey, type NavEdge, type NavGraph } from '../shared/nav';
 import { childRect } from '../shared/movers';
+import { geyserRects, gustAt, liquidSurface, tsunamiIn } from '../shared/mapfx';
 import { IN_JUMP, IN_LEFT, IN_RIGHT, IN_SPRINT } from '../shared/physics';
 import { airDistance, assessPlacement, checkPlacement, progressOf, type PlaceRequest } from '../shared/placement';
 import type { Card } from '../shared/protocol';
@@ -272,7 +273,7 @@ export class BotRacer {
     }
     // paper planes and dirt piles are stood on like ground: only real platforms are riding nodes
     const gm = b.groundMover >= 0 ? sim.movers[b.groundMover] : undefined;
-    const ridden = gm && !gm.plane && !gm.fixed ? gm : undefined;
+    const ridden = gm && !gm.plane && !gm.fixed && !gm.ball ? gm : undefined;
     if (ridden && ridden.hz) {
       // riding a legacy moving platform: hop off toward the flag once it is roughly aligned
       const fin = sim.world.finishPx;
@@ -323,8 +324,12 @@ export class BotRacer {
     }
     // align on the recorded start position
     if (Math.abs(dx) > this.diff.alignTol || Math.abs(b.vx) > 30) return steerTo(b, dx, this.diff.alignTol);
+    // map hazards that are certain death: always wait them out
+    if (edgeDoomed(e, sim)) { this.holdProgress(sim, { ...e, period: 600 }); return 0; }
+    // a tsunami on its way and we are below the waterline: climb now, no dithering over timed traps
+    const urgent = tsunamiUrgent(sim, b);
     // wait for a safe window on timed hazards
-    if (this.waitT <= 0 && this.rng.chance(this.diff.safetyCheck) && !edgeSafe(e, sim, this.id)) { this.waitT = 0.25; }
+    if (!urgent && this.waitT <= 0 && this.rng.chance(this.diff.safetyCheck) && !edgeSafe(e, sim, this.id)) { this.waitT = 0.25; }
     if (this.waitT > 0) {
       this.waitT -= DT;
       if (this.waitT <= 0 && !edgeSafe(e, sim, this.id) && this.rng.chance(0.85)) this.waitT = 0.2;
@@ -343,8 +348,8 @@ export class BotRacer {
 
   private makePlan(sim: RaceSim, nav: NavGraph, node: number): NavEdge[] | null {
     const direct = nav.route(node, e => this.cost(e, sim));
-    // coin detour: only when cheap and the bot is greedy enough
-    if (direct && this.rng.chance(this.diff.coinGreed)) {
+    // coin detour: only when cheap and the bot is greedy enough (never with a tsunami on its way)
+    if (direct && !tsunamiUrgent(sim, sim.player(this.id)!.body) && this.rng.chance(this.diff.coinGreed)) {
       const coin = sim.coins.find(c => (c.state === 'origin' || c.state === 'dropped'));
       if (coin) {
         const ck = nav.prober.landingNode({ x: coin.x - BW / 2, y: Math.floor(coin.y / CELL + 1) * CELL - BH } as never);
@@ -362,6 +367,14 @@ export class BotRacer {
     const dir = fin.x > b.x ? IN_RIGHT : IN_LEFT;
     return dir | (this.rng.chance(0.06) ? IN_JUMP : 0) | (this.rng.chance(0.5) ? IN_SPRINT : 0);
   }
+}
+
+/** A tsunami arrives within 8 s (or is up) and the body is below its high-water line. */
+function tsunamiUrgent(sim: RaceSim, b: { y: number }): boolean {
+  const fx = sim.world.map.fx;
+  if (!fx?.tsunami) return false;
+  const tin = tsunamiIn(fx, sim.tick);
+  return (tin === null || tin < 8) && b.y + BH > fx.tsunami.high - 10;
 }
 
 /** Ground steering to a target offset that accounts for ice: brake by counter-steering when release would slide. */
@@ -439,8 +452,26 @@ function hazardRisk(e: NavEdge, sim: RaceSim): number {
 }
 
 /** Predict timed hazards and projectiles along the edge's recorded path. */
+/**
+ * Map hazards that are certain death or certain failure (lava geysers, the tsunami, a gust mid-jump). Unlike timed
+ * traps, bots never gamble on these: every difficulty waits for a clear window.
+ */
+export function edgeDoomed(e: NavEdge, sim: RaceSim): boolean {
+  const map = sim.world.map;
+  if (!map.fx) return false;
+  if (map.fx.gusts && e.kind !== 'walk') for (let f = 0; f < e.frames + 20; f += 6) if (gustAt(map, sim.tick + f) !== 0) return true;
+  for (let f = 0; f < e.frames; f += 3) {
+    const x = e.path[f * 2], y = e.path[f * 2 + 1];
+    const br: Rect = { x: x - 6, y: y - 6, w: BW + 12, h: BH + 12 };
+    if (map.fx.tsunami) { const sfc = liquidSurface(map, sim.tick + f); if (sfc !== null && y + BH > sfc - 4) return true; }
+    if (map.fx.geysers && (geyserRects(map, sim.tick + f).some(r => rectsOverlap(br, r)) || geyserRects(map, sim.tick + f + 10).some(r => rectsOverlap(br, r)))) return true;
+  }
+  return false;
+}
+
 export function edgeSafe(e: NavEdge, sim: RaceSim, botId = ''): boolean {
   const slow = sim.slowMul;
+  if (edgeDoomed(e, sim)) return false;
   for (let f = 0; f < e.frames; f += 3) {
     const x = e.path[f * 2], y = e.path[f * 2 + 1];
     const br: Rect = { x: x - 4, y: y - 4, w: BW + 8, h: BH + 8 };
