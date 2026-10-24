@@ -273,7 +273,7 @@ export class UI {
       h('h3', {}, 'Big maps'),
       h('p', {}, 'The Great Oak can’t be crossed until someone builds a way over the tree: while there is no full route, every draft guarantees building cards, races are short scouting runs, and you may place anything that doesn’t cut players off from the furthest point they can reach. Under the Mountain is sealed to the sky: the only way on is through the cave.'),
       h('h3', {}, 'Controls'),
-      h('p', {}, `${keyLabel(settings.binds.left[0])}/${keyLabel(settings.binds.right[0])} move, ${keyLabel(settings.binds.jump[0])} jump, hold ${keyLabel(settings.binds.sprint[0])} to sprint, ${keyLabel(settings.binds.down[0])} + jump drops through one-way platforms. Slide down any wall by falling against it and press jump to wall-jump. You can steer back to the same wall and keep climbing as often as you like. Building: mouse to aim, click or ${keyLabel(settings.binds.confirm[0])} to place, right-click or ${keyLabel(settings.binds.rotate[0])} to rotate, ${keyLabel(settings.binds.flip[0])} flips a sniper’s facing or a Ferris wheel’s spin, the mouse wheel or ${keyLabel(settings.binds.zoom[0])} zooms. Arrow keys also move the cursor while building.`),
+      h('p', {}, `${keyLabel(settings.binds.left[0])}/${keyLabel(settings.binds.right[0])} move, ${keyLabel(settings.binds.jump[0])} jump, hold ${keyLabel(settings.binds.sprint[0])} to sprint, ${keyLabel(settings.binds.down[0])} drops you through one-way platforms (no jump needed). Slide down any wall by falling against it and press jump to wall-jump. You can steer back to the same wall and keep climbing as often as you like. Building: mouse to aim, click or ${keyLabel(settings.binds.confirm[0])} to place, right-click or ${keyLabel(settings.binds.rotate[0])} to rotate, ${keyLabel(settings.binds.flip[0])} flips a sniper’s facing or a Ferris wheel’s spin, the mouse wheel or ${keyLabel(settings.binds.zoom[0])} zooms. Arrow keys also move the cursor while building.`),
       h('h3', {}, 'Scoring'),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' },
         h('tr', {}, h('th', {}, 'Event'), h('th', {}, 'Points'), h('th', {}, 'When')),
@@ -548,7 +548,20 @@ export class UI {
 
   // ======================================================== HUD (updated every frame, cheap)
   private hudEls: Record<string, HTMLElement> | null = null;
-  private emoteEls: { btn: HTMLElement; picker: HTMLElement } | null = null;
+  private emoteEls: { btn: HTMLElement; wheel: HTMLElement; slices: HTMLElement[]; hub: HTMLElement; pointer: HTMLElement } | null = null;
+  /** emote wheel state; `viaKey` means it closes (and plays) when the emote key is released */
+  emoteWheel = { open: false, sel: 0, viaKey: false };
+  canEmote(): boolean {
+    const g = this.g;
+    return (g.phase === 'countdown' || g.phase === 'race' || g.phase === 'results') && !!g.race && !g.me?.spectator && !this.paused;
+  }
+  openEmoteWheel(viaKey: boolean) { if (!this.canEmote()) return; this.emoteWheel.open = true; this.emoteWheel.viaKey = viaKey; }
+  closeEmoteWheel(play: boolean) {
+    if (!this.emoteWheel.open) return;
+    this.emoteWheel.open = false;
+    if (play) this.g.emote(this.emoteWheel.sel);
+  }
+  scrollEmote(dir: number) { const n = EMOTES.length; this.emoteWheel.sel = (((this.emoteWheel.sel + dir) % n) + n) % n; }
   private updateHud() {
     const g = this.g;
     const show = g.phase !== 'lobby' && !!g.room;
@@ -558,19 +571,37 @@ export class UI {
       const top = h('div', { class: 'hud-top' }, h('div', { class: 'chip', 'data-k': 'round' }), h('div', { class: 'chip timer', 'data-k': 'timer' }), h('div', { class: 'chip', 'data-k': 'score' }));
       const els = { round: top.children[0] as HTMLElement, timer: top.children[1] as HTMLElement, score: top.children[2] as HTMLElement, standings: h('div', { class: 'standings' }), left: h('div', { class: 'hud-left' }), banner: h('div', { class: 'banner hidden' }), count: h('div', { class: 'big-count hidden' }), spect: h('div', { class: 'spectate hidden' }), dev: h('div', { class: 'dev hidden' }), menuBtn: h('button', { class: 'btn small menu-btn', onclick: () => this.setPaused(true), 'aria-label': 'Menu' }, '☰') };
       top.append(els.menuBtn);
-      const picker = h('div', { class: 'emote-picker hidden', role: 'menu', 'aria-label': 'Emotes' },
-        ...EMOTES.map((em, i) => h('button', { class: 'emote-btn', role: 'menuitem', title: `${em.name} (${(i + 1) % 10})`, onclick: () => { this.g.emote(i); picker.classList.add('hidden'); } },
-          skinCanvas(settings.skin, PLAYER_COLORS[(this.g.me?.color ?? 0) % PLAYER_COLORS.length], 34, 40, 'idle', i), h('span', {}, em.name), h('kbd', {}, String((i + 1) % 10)))));
-      const emoteBtn = h('button', { class: 'btn small emote-toggle', 'aria-label': 'Emotes', title: 'Emotes (keys 1-0)', onclick: () => picker.classList.toggle('hidden') }, '☺ Emote');
-      this.emoteEls = { btn: emoteBtn, picker };
+      // emote wheel: hold the emote key (or tap the button), scroll the mouse wheel or point at a slice, release to play
+      const n = EMOTES.length;
+      const slices = EMOTES.map((em, i) => {
+        const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+        return h('button', { class: 'slice', role: 'menuitem', title: em.name, style: `left:${160 + Math.cos(a) * 118}px;top:${160 + Math.sin(a) * 118}px`, onclick: () => { this.emoteWheel.sel = i; this.closeEmoteWheel(true); }, onpointerenter: () => { this.emoteWheel.sel = i; } },
+          skinCanvas(settings.skin, PLAYER_COLORS[(this.g.me?.color ?? 0) % PLAYER_COLORS.length], 34, 40, 'idle', i), h('span', {}, em.name));
+      });
+      const hub = h('div', { class: 'hub' });
+      const pointer = h('div', { class: 'pointer' });
+      const wheel = h('div', { class: 'emote-wheel hidden', role: 'menu', 'aria-label': 'Emote wheel' }, pointer, ...slices, hub);
+      const emoteBtn = h('button', { class: 'btn small emote-toggle', 'aria-label': 'Emotes', title: `Emotes (hold ${keyLabel(settings.binds.emote[0])})`, onclick: () => (this.emoteWheel.open ? this.closeEmoteWheel(false) : this.openEmoteWheel(false)) }, '☺ Emote');
+      this.emoteEls = { btn: emoteBtn, wheel, slices, hub, pointer };
       this.layers.hud.replaceChildren(top, els.standings, els.left, els.banner, els.count, els.spect, els.dev);
-      if (this.emoteEls) this.layers.hud.append(this.emoteEls.btn, this.emoteEls.picker);
+      if (this.emoteEls) this.layers.hud.append(this.emoteEls.btn, this.emoteEls.wheel);
       this.hudEls = els;
     }
     const e = this.hudEls!;
     // emotes are for when characters are on screen: countdown, race and the results that follow
-    const canEmote = (g.phase === 'countdown' || g.phase === 'race' || g.phase === 'results') && !!g.race && !g.me?.spectator;
-    if (this.emoteEls) { this.emoteEls.btn.classList.toggle('hidden', !canEmote); if (!canEmote) this.emoteEls.picker.classList.add('hidden'); }
+    const canEmote = this.canEmote();
+    if (!canEmote) this.emoteWheel.open = false;
+    if (this.emoteEls) {
+      const el = this.emoteEls, w = this.emoteWheel;
+      el.btn.classList.toggle('hidden', !canEmote);
+      el.wheel.classList.toggle('hidden', !w.open);
+      if (w.open) {
+        el.slices.forEach((sl, i) => sl.classList.toggle('sel', i === w.sel));
+        const em = EMOTES[w.sel];
+        if (el.hub.dataset.k !== em.id) { el.hub.dataset.k = em.id; el.hub.replaceChildren(em.name, h('small', {}, w.viaKey ? 'scroll · release to play' : 'tap to play')); }
+        el.pointer.style.transform = `rotate(${(w.sel / EMOTES.length) * 360 + 180}deg)`;
+      }
+    }
     const left = g.timeLeft / 1000;
     const phaseName = { draft: 'Draft', build: 'Build', countdown: 'Get ready', race: 'Race', results: 'Results', matchEnd: 'Match over', lobby: '' }[g.phase];
     e.round.textContent = `Round ${g.round} · ${phaseName} · first to ${g.target}`;
@@ -618,7 +649,7 @@ export class UI {
     else if (g.phase === 'race' && p && p.status === 'dead') banner = `Eliminated. Spectating until the next round.`;
     else if (g.phase === 'race' && p && p.status === 'finished') banner = `Finished! ${(p.finishTick / 60).toFixed(2)}s · spectating`;
     else if (g.phase === 'build' && g.rehearsal) banner = 'Rehearsal: practice run, nothing here counts.';
-    else if ((g.phase === 'build' || g.phase === 'race') && !g.courseOpen && g.world?.map.buildRequired) banner = g.phase === 'race' ? 'Scouting run: there is no full route yet. Build one next round.' : 'No full route to the flag yet: build a way over the obstacle.';
+    else if (g.phase === 'build' && !g.courseOpen && g.world?.map.buildRequired) banner = 'No full route to the flag yet: build a way over the obstacle.';
     else if (g.phase === 'build' && window.innerHeight > 520) { const n = g.room!.members.filter(m => !m.spectator).length; banner = `${n} player${n === 1 ? '' : 's'} building · ${Math.ceil(left)}s left`; }
     e.banner.textContent = banner;
     e.banner.classList.toggle('hidden', !banner);

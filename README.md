@@ -27,14 +27,15 @@ Useful tools: `npx tsx scripts/map-ascii.ts rooftop` prints a map with its reach
 | Move | A/D or ←/→ |
 | Jump / wall jump | Space, W or ↑ (hold for a higher jump) |
 | Sprint | Hold Shift |
-| Drop through one-way platform | S or ↓ + Jump |
+| Drop through one-way platform | S or ↓ (no jump needed) |
 | Build: aim / place / rotate | Mouse (or arrow keys) / click, Enter or E / right-click, R or Q (Shift+R reverses) |
 | Build: flip sniper facing, zoom | F, Z or mouse wheel |
 | Spectate next player | Tab |
 | Practice: instant retry | T |
+| Emote wheel | Hold G, scroll the mouse wheel to choose, release to play |
 | Menu | Esc (pauses only in solo practice) |
 
-Every binding can be changed in Settings. On phones and tablets: hold ◀/▶ to move, RUN to sprint, JUMP to jump (multi-touch, so you can run and jump together), ▼ + JUMP to drop through. Building on touch: tap a cell or drag anywhere to nudge the preview, Zoom for precision, then tap Place. Phones play in landscape; Play fullscreen on the menu hides the browser bars where supported. Gamepads work for movement (stick or d-pad, A jump, X/RB/RT sprint). Wall sliding is automatic when you fall against a wall; jump off it, steer back, and you can climb the same wall as many times as you like.
+Every binding can be changed in Settings. On phones and tablets: hold ◀/▶ to move, RUN to sprint, JUMP to jump (multi-touch, so you can run and jump together), ▼ to drop through one-way platforms. Building on touch: tap a cell or drag anywhere to nudge the preview, Zoom for precision, then tap Place. Phones play in landscape; Play fullscreen on the menu hides the browser bars where supported. Gamepads work for movement (stick or d-pad, A jump, X/RB/RT sprint). Wall sliding is automatic when you fall against a wall; jump off it, steer back, and you can climb the same wall as many times as you like.
 
 ## Match rules
 
@@ -42,7 +43,7 @@ The host picks a **score to win** from 5 to 15 (default 10); the server validate
 
 **Draft.** One shared pool of 5–10 individual cards per round, always at least one per participant, balanced across construction, hazards, utilities and demolition. Humans choose first: the server refuses bot claims until every human has picked, timed out or disconnected (those get the usual seeded random card first), then the AI picks from what is left. The first valid claim on a card wins it atomically; everyone gets exactly one item. After a round where nobody finished (or if the route check finds the course shut), the next pool is guaranteed a bomb. Bombs also turn up every few rounds.
 
-**Build.** Everything snaps to one 48 px grid. Nothing may overlap anything else, solid or not; touching edges is fine. The striped zones around START and FINISH are off limits. Whether the course stays finishable is not a placement rule: a legal placement may seal the course, and bombs are how it gets reopened. The route search (the same physics as the game from every reachable standing spot, a conservative sampled search) only guides bots and the draft mix. Rehearse lets you test the course locally without scoring while the build timer keeps running. Timed-out construction and utility items get a validated fallback spot; hazards and bombs are skipped with a notice.
+**Build.** Everything snaps to one 48 px grid. Nothing may overlap anything else, solid or not; touching edges is fine. The striped zones around START and FINISH are off limits. Whether the course stays finishable is not a placement rule: a legal placement may seal the course, and bombs are how it gets reopened. The route search (the same physics as the game from every reachable standing spot, a conservative sampled search) only guides bots and the draft mix. Rehearse lets you test the course locally without scoring while the build timer keeps running. There is no auto-placement: an item that is not placed before the build timer runs out is lost for that round.
 
 **Race.** One life per race. Players never collide with each other. Dead and finished players spectate. A disconnected player's avatar stays in the race with no input; after a 20 s grace period they're eliminated for that race (no immunity, no extra lives). Ties on the same simulation tick share first place. If a lethal contact and the finish happen on the same tick, the lethal contact wins.
 
@@ -142,4 +143,4 @@ Latency: the client pings the game server once a second over the gameplay socket
 
 ## Emotes and animations
 
-Ten emotes: wave, dance, spin, flex, laugh, cry, point, heart, thumbs up and floss. Play them with keys 1 to 0, or the Emote button during countdown, race and results. They're cosmetic. The server relays them to the room with a 0.9 s cooldown and rejects anything that isn't a known emote. An emote ends after 2.6 s or the moment you move. Characters also blink, glance around, tap a foot after standing still a while, and crouch ready during the countdown. They skid when braking out of a turn and flail when falling. Finishers dance on the flag, and the match-over screen shows the winners dancing. Idle arms now hang at the sides; they used to point up behind the head. Browser check: `node tests/e2e/emotes.mjs`.
+Ten emotes: wave, dance, spin, flex, laugh, cry, point, heart, thumbs up and floss. Hold G (rebindable) during countdown, race and results to open the emote wheel, scroll the mouse wheel (or point at a slice) to choose, and let go to play it. On touch, tap the Emote button and then a slice. They're cosmetic. The server relays them to the room with a 0.9 s cooldown and rejects anything that isn't a known emote. An emote ends after 2.6 s or the moment you move. Characters also blink, glance around, tap a foot after standing still a while, and crouch ready during the countdown. They skid when braking out of a turn and flail when falling. Finishers dance on the flag, and the match-over screen shows the winners dancing. Idle arms now hang at the sides; they used to point up behind the head. Browser check: `node tests/e2e/emotes.mjs`.

@@ -194,6 +194,9 @@ export const EMOTES = [
 ] as const;
 export const EMOTE = { durationS: 2.6, cooldownMs: 900 };
 
+/** Number of character skins (client art in art.ts SKINS must have exactly this many). */
+export const SKIN_COUNT = 16;
+
 export const PROTECT_PAD_CELLS = 2; // ~3 character widths around start and finish
 
 export const NET = {

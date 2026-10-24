@@ -1,5 +1,5 @@
 // Room membership and the server-owned match phase machine. No Node or DOM APIs: solo practice runs this in the browser.
-import { EMOTE, MATCH, PROTOCOL_VERSION, SCORING, TICK_HZ, TIMERS, SNAPSHOT_EVERY_TICKS, NET, type Difficulty } from '../shared/config';
+import { EMOTE, MATCH, SKIN_COUNT, PROTOCOL_VERSION, SCORING, TICK_HZ, TIMERS, SNAPSHOT_EVERY_TICKS, NET, type Difficulty } from '../shared/config';
 import { getItem, ITEM_LIST, type DraftGroup } from '../shared/items';
 import { MAP_LIST, MAPS, selectableMap } from '../shared/maps';
 import { baseNav, NavGraph } from '../shared/nav';
@@ -27,7 +27,7 @@ export function randomCode(len = 5): string {
   return Array.from(a, b => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
 }
 
-export const SKIN_COUNT = 8;
+export { SKIN_COUNT };
 const BOT_NAMES = ['Bolt', 'Pip', 'Juno', 'Rex', 'Mika', 'Ozzy', 'Tess', 'Kiko', 'Vex', 'Nori'];
 
 export interface Member {
@@ -519,28 +519,11 @@ export class Match {
       if (this.done.has(id)) continue;
       const item = this.itemOf(id);
       if (!item) { this.done.add(id); continue; }
+      // no auto-placement: an item that was not placed in time is simply lost for the round
       const def = getItem(item);
       const name = this.room.member(id)?.name ?? 'Player';
-      if (def.group === 'hazard' || def.group === 'demolition') {
-        this.done.add(id);
-        this.room.broadcast({ t: 'skip', pid: id, msg: `${name} ran out of time: ${def.name} was not placed` });
-        continue;
-      }
-      // simple safe items get a legal fallback spot
-      let ok = false;
-      for (const req of randomCandidates(this.world, def, this.rng, 4)) {
-        const check = checkPlacement(this.world, req);
-        if (!check.ok) continue;
-        const obj = makeObject(this.world, req, check, id, this.round);
-        applyPlacement(this.world, obj);
-        this.navDirty.push(check.region ?? regionForCells(check.cells, 48));
-        this.room.broadcast({ t: 'placed', obj, by: id, version: this.world.version });
-        this.room.broadcast({ t: 'notice', msg: `${name} ran out of time: ${def.name} auto-placed` });
-        ok = true;
-        break;
-      }
-      if (!ok) this.room.broadcast({ t: 'skip', pid: id, msg: `${name} ran out of time and no legal spot was found` });
       this.done.add(id);
+      this.room.broadcast({ t: 'skip', pid: id, msg: `${name} ran out of time: ${def.name} was not placed` });
     }
     this.startCountdown();
   }

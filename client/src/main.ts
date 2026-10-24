@@ -1,11 +1,11 @@
 import './style.css';
-import { CELL, EMOTES, fmtPts, SCORING } from '../../shared/config';
+import { CELL, fmtPts, SCORING } from '../../shared/config';
 import { getItem } from '../../shared/items';
 import type { RaceEvent } from '../../shared/race';
 import { sfx, startMusic, unlockAudio } from './audio';
 import { PLAYER_COLORS } from './art';
 import { GameClient } from './game';
-import { clearPressed, initInput, setGameKeysActive } from './input';
+import { clearPressed, initInput, isDown, setGameKeysActive } from './input';
 import { Renderer } from './render';
 import { settings, saveSettings } from './store';
 import { animatePreviews, UI } from './ui';
@@ -96,20 +96,19 @@ game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
 };
 
 // ------------------------------------------------ keyboard actions
-// emotes: number keys 1-9 and 0 while in a match (cosmetic, never affects the race)
-window.addEventListener('keydown', ev => {
-  const tgt = ev.target as HTMLElement | null;
-  if (ev.repeat || ui.screen !== 'game' || ui.paused || (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'SELECT' || tgt.tagName === 'TEXTAREA'))) return;
-  const m = /^Digit(\d)$/.exec(ev.code);
-  if (!m || game.phase === 'build' || game.phase === 'draft') return; // digits stay free while building and drafting
-  const i = m[1] === '0' ? 9 : Number(m[1]) - 1;
-  if (i < EMOTES.length) game.emote(i);
-});
+// emotes: hold the emote key to open the wheel, scroll the mouse wheel to choose, release to play (cosmetic only)
+window.addEventListener('wheel', e => {
+  if (!ui.emoteWheel.open) return;
+  e.preventDefault();
+  ui.scrollEmote(e.deltaY > 0 ? 1 : -1);
+}, { passive: false, capture: true });
 
 initInput((a, ev) => {
   unlockAudio();
   if (ui.screen !== 'game') return;
+  if (a === 'emote') { if (ui.emoteWheel.open && !ui.emoteWheel.viaKey) ui.closeEmoteWheel(true); else ui.openEmoteWheel(true); return; }
   if (a === 'menu') {
+    if (ui.emoteWheel.open) { ui.closeEmoteWheel(false); return; }
     if (game.rehearsal) { game.stopRehearsal(); return; }
     ui.setPaused(!ui.paused);
     return;
@@ -196,6 +195,8 @@ function loop(now: number) {
   renderer.insetBottom = bar ? window.innerHeight - bar.getBoundingClientRect().top + 6 : 0;
   const hudTop = document.querySelector('.hud-top');
   renderer.insetTop = hudTop && game.phase === 'build' ? hudTop.getBoundingClientRect().bottom + 4 : 0;
+  // a wheel opened by holding the emote key plays its selection when the key is let go
+  if (ui.emoteWheel.open && ui.emoteWheel.viaKey && !isDown('emote')) ui.closeEmoteWheel(true);
   renderer.frame(game, dt);
   ui.render();
   animatePreviews(now / 1000);

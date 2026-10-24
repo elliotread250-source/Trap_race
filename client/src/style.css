@@ -236,13 +236,15 @@ table.results td.total { color: var(--accent); font-size: 16px; }
 
 /* emotes */
 .emote-toggle { position: absolute; right: 12px; bottom: 12px; pointer-events: auto; z-index: 5; }
-.emote-picker { position: absolute; right: 12px; bottom: 52px; display: grid; grid-template-columns: repeat(5, 76px); gap: 6px; padding: 8px; background: rgba(20, 14, 44, .92); border: 1px solid rgba(255, 255, 255, .14); border-radius: 14px; pointer-events: auto; z-index: 6; }
-.emote-picker.hidden { display: none; }
-.emote-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 2px; background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1); border-radius: 10px; color: #fff; font: 600 11px/1.1 inherit; cursor: pointer; }
-.emote-btn:hover, .emote-btn:focus-visible { background: rgba(255, 210, 94, .18); border-color: rgba(255, 210, 94, .6); }
-.emote-btn canvas { width: 34px; height: 40px; }
-.emote-btn kbd { font-size: 10px; opacity: .7; }
+.emote-wheel { position: absolute; left: 50%; top: 50%; width: 320px; height: 320px; margin: -160px 0 0 -160px; border-radius: 50%; background: radial-gradient(circle, rgba(20, 14, 44, .55) 0 30%, rgba(20, 14, 44, .9) 31% 100%); border: 2px solid rgba(255, 255, 255, .16); box-shadow: 0 10px 40px rgba(0, 0, 0, .45); pointer-events: auto; z-index: 6; }
+.emote-wheel.hidden { display: none; }
+.emote-wheel .slice { position: absolute; width: 64px; height: 70px; margin: -35px 0 0 -32px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border-radius: 14px; border: 2px solid transparent; background: rgba(255, 255, 255, .05); color: #fff; font: 600 11px/1.1 inherit; cursor: pointer; transition: transform .08s, background .08s; }
+.emote-wheel .slice canvas { width: 34px; height: 40px; }
+.emote-wheel .slice.sel { background: rgba(255, 210, 94, .22); border-color: rgba(255, 210, 94, .9); transform: scale(1.14); }
+.emote-wheel .hub { position: absolute; left: 50%; top: 50%; width: 92px; margin-left: -46px; transform: translateY(-50%); text-align: center; color: #fff; font: 700 14px/1.2 inherit; pointer-events: none; }
+.emote-wheel .hub small { display: block; font-weight: 500; font-size: 10px; opacity: .7; margin-top: 3px; }
+.emote-wheel .pointer { position: absolute; left: 50%; top: 50%; width: 4px; height: 52px; margin-left: -2px; background: linear-gradient(rgba(255, 210, 94, .95), rgba(255, 210, 94, 0)); transform-origin: 50% 0; border-radius: 2px; pointer-events: none; }
 .winner-dance { display: flex; justify-content: center; gap: 12px; margin-top: 4px; }
 .winner-dance canvas { width: 90px; height: 105px; }
-@media (max-width: 720px) { .emote-picker { grid-template-columns: repeat(5, 60px); } .emote-toggle { bottom: auto; top: 54px; right: 8px; } .emote-picker { bottom: auto; top: 92px; } }
+@media (max-width: 720px) { .emote-toggle { bottom: auto; top: 54px; right: 8px; } .emote-wheel { transform: scale(.8); } }
 .emote-toggle.hidden { display: none; }

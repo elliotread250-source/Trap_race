@@ -343,12 +343,13 @@ export function stepBody(b: Body, input: number, env: PhysEnv): void {
     b.wallSliding = true;
   }
 
+  // dropping: Down alone falls through a one-way floor (no jump press needed); Down + Jump does the same
+  if (b.grounded && down && isOnOnewayOnly(b, env)) {
+    b.dropT = PHYS.dropThroughTime; b.jumpBuf = 0; b.grounded = false; b.coyote = 0; b.y += 1;
+  }
   // jumping
   if (b.jumpBuf > 0) {
-    const onOneway = b.grounded && down && isOnOnewayOnly(b, env);
-    if (onOneway) {
-      b.dropT = PHYS.dropThroughTime; b.jumpBuf = 0; b.grounded = false; b.y += 1;
-    } else if (b.grounded || b.coyote > 0) {
+    if (b.grounded || b.coyote > 0) {
       b.vy = -PHYS.jumpImpulse * env.jumpMul; b.grounded = false; b.coyote = 0; b.jumpBuf = 0; b.jumpRising = true; b.jumped = true;
       b.groundMover = -1;
     } else if (b.wallDir !== 0 && b.wallJumpReady) {

@@ -358,7 +358,7 @@ export class Prober {
     if (below === C_ONEWAY) {
       for (const dir of [0, -1, 1]) {
         const d = dir < 0 ? IN_LEFT : dir > 0 ? IN_RIGHT : 0;
-        add(this.once(n, f => (f < 2 ? IN_DOWN | IN_JUMP : f > 10 ? d : 0), 160, 'drop'));
+        add(this.once(n, f => (f < 2 ? IN_DOWN : f > 10 ? d : 0), 160, 'drop'));
       }
     }
     const edges: NavEdge[] = [];

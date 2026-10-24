@@ -17,6 +17,14 @@ export const SKINS: SkinDef[] = [
   { id: 'skeleton', name: 'Skeleton', body: '#efeadc', belly: '#2d2a3a', dark: '#9c958a', detail: '#1c1a24' },
   { id: 'penguin', name: 'Penguin', body: '#24283b', belly: '#f5f7ff', dark: '#11131d', detail: '#ffa41b' },
   { id: 'knight', name: 'Knight', body: '#b9c3cf', belly: '#8e99a8', dark: '#596372', detail: '#e2463e' },
+  { id: 'cat', name: 'Cat', body: '#9b8cff', belly: '#efeaff', dark: '#4a3d9a', detail: '#1c1640' },
+  { id: 'bear', name: 'Bear', body: '#9a6438', belly: '#e9c49a', dark: '#5a3418', detail: '#1f1006' },
+  { id: 'pirate', name: 'Pirate', body: '#d94a3d', belly: '#f4e3c8', dark: '#6e1f1a', detail: '#1b1b22' },
+  { id: 'alien', name: 'Alien', body: '#8cf27a', belly: '#d9ffd0', dark: '#3a8a2e', detail: '#0c1a0a' },
+  { id: 'wizard', name: 'Wizard', body: '#3e4fc9', belly: '#a9b4ff', dark: '#1e2670', detail: '#ffd25e' },
+  { id: 'chef', name: 'Chef', body: '#f7f7f7', belly: '#ffffff', dark: '#9aa0ad', detail: '#2b2b33' },
+  { id: 'dino', name: 'Dino', body: '#2fb8a0', belly: '#c9f5e6', dark: '#16675a', detail: '#0b1f1b' },
+  { id: 'bee', name: 'Bee', body: '#ffcc2e', belly: '#2a2112', dark: '#8a6a00', detail: '#1a1408' },
 ];
 
 export type AnimState = 'idle' | 'run' | 'sprint' | 'jump' | 'fall' | 'wallslide' | 'walljump' | 'land' | 'celebrate' | 'ghost' | 'skid' | 'ready' | 'bored';
@@ -114,6 +122,10 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
     ctx.fillStyle = s.belly; ctx.beginPath(); ctx.arc(-19, -24, 3, 0, Math.PI * 2); ctx.fill();
   }
   if (s.id === 'astronaut') { ctx.fillStyle = s.dark; ctx.strokeStyle = line; rr(ctx, -15, -30, 8, 15, 3); ctx.fill(); ctx.stroke(); }
+  if (s.id === 'cat') { ctx.strokeStyle = line; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(-8, -14); ctx.quadraticCurveTo(-22, -16, -18, -30 - Math.sin(t * 5) * 3); ctx.stroke(); ctx.strokeStyle = s.body; ctx.lineWidth = 3; ctx.stroke(); ctx.lineWidth = 2.2; }
+  if (s.id === 'dino') { ctx.fillStyle = s.body; ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(-8, -20); ctx.quadraticCurveTo(-20, -14, -24, -6 - Math.sin(t * 6) * 2); ctx.quadraticCurveTo(-14, -10, -6, -12); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  if (s.id === 'bee') { ctx.fillStyle = 'rgba(220,240,255,.75)'; ctx.strokeStyle = 'rgba(14,10,30,.6)'; const flap = Math.sin(t * 40) * 0.25; for (const k of [0, 1]) { ctx.save(); ctx.translate(-6, -26); ctx.rotate(-0.5 - k * 0.5 + flap); ctx.beginPath(); ctx.ellipse(-7, 0, 8, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore(); } }
+  if (s.id === 'wizard') { ctx.fillStyle = s.dark; ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(-10, -26); ctx.lineTo(-14, -6); ctx.lineTo(-4, -10); ctx.closePath(); ctx.fill(); ctx.stroke(); }
 
   // legs
   const leg = (ang: number, sideX: number) => {
@@ -135,6 +147,11 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
   else if (s.id === 'knight') { ctx.fillStyle = s.detail; rr(ctx, -6, -25, 12, 13, 3); ctx.fill(); ctx.fillStyle = '#ffd25e'; ctx.fillRect(-1.5, -24, 3, 11); }
   else if (s.id === 'robot') { ctx.fillStyle = s.belly; rr(ctx, -6, -24, 12, 9, 2); ctx.fill(); ctx.fillStyle = s.detail; ctx.fillRect(-4, -22, 3, 3); ctx.fillStyle = '#ff5e8a'; ctx.fillRect(1, -22, 3, 3); }
   else if (s.id === 'ninja') { ctx.fillStyle = s.detail; ctx.fillRect(-10, -16, 20, 3); }
+  else if (s.id === 'bee') { ctx.fillStyle = s.belly; ctx.fillRect(-9, -24, 18, 3); ctx.fillRect(-9, -18, 18, 3); }
+  else if (s.id === 'pirate') { ctx.fillStyle = s.belly; for (let i = 0; i < 3; i++) ctx.fillRect(-9, -25 + i * 5, 18, 2.2); ctx.fillStyle = '#3b2412'; ctx.fillRect(-10, -14, 20, 3); ctx.fillStyle = '#ffd25e'; ctx.fillRect(-2, -14.5, 4, 4); }
+  else if (s.id === 'chef') { ctx.fillStyle = s.dark; for (const by of [-23, -18]) { ctx.beginPath(); ctx.arc(-2, by, 1.4, 0, Math.PI * 2); ctx.arc(3, by, 1.4, 0, Math.PI * 2); ctx.fill(); } ctx.fillStyle = '#e2463e'; ctx.beginPath(); ctx.moveTo(-5, -27); ctx.lineTo(5, -27); ctx.lineTo(0, -22); ctx.closePath(); ctx.fill(); }
+  else if (s.id === 'wizard') { ctx.fillStyle = s.detail; for (const [sx, sy] of [[-4, -22], [4, -17], [-1, -14]]) { ctx.beginPath(); ctx.arc(sx, sy, 1.6, 0, Math.PI * 2); ctx.fill(); } ctx.fillStyle = '#ece8ff'; ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(8, -26); ctx.lineTo(4, -12); ctx.closePath(); ctx.fill(); }
+  else if (s.id === 'dino') { ctx.fillStyle = s.belly; ctx.beginPath(); ctx.ellipse(2, -18, 6, 7, 0, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = s.dark; ctx.lineWidth = 1.2; for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(-3, -22 + i * 4); ctx.lineTo(7, -22 + i * 4); ctx.stroke(); } ctx.lineWidth = 2.2; ctx.strokeStyle = line; }
   else { ctx.beginPath(); ctx.ellipse(1, -18, 6, 7, 0, 0, Math.PI * 2); ctx.fill(); }
 
   // arms
@@ -166,6 +183,14 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
   if (s.id === 'frog') { for (const ex of [-5, 6]) { ctx.fillStyle = s.body; ctx.beginPath(); ctx.arc(ex, hy - 8, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); } }
   if (s.id === 'ninja') { ctx.fillStyle = s.detail; ctx.fillRect(-11, hy - 5, 22, 4); ctx.beginPath(); ctx.moveTo(-10, hy - 3); ctx.lineTo(-19, hy - 6 + Math.sin(t * 9) * 2); ctx.lineTo(-18, hy + 1); ctx.closePath(); ctx.fill(); }
   if (s.id === 'astronaut') { ctx.fillStyle = s.detail; rr(ctx, -3, hy - 6, 13, 10, 5); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.arc(6, hy - 3, 2, 0, Math.PI * 2); ctx.fill(); }
+  if (s.id === 'cat') { for (const ex of [-7, 4]) { ctx.fillStyle = s.body; ctx.beginPath(); ctx.moveTo(ex - 3, hy - 8); ctx.lineTo(ex + 1, hy - 17); ctx.lineTo(ex + 6, hy - 8); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#ffb3d1'; ctx.beginPath(); ctx.moveTo(ex - 0.5, hy - 9); ctx.lineTo(ex + 1.5, hy - 14); ctx.lineTo(ex + 3.5, hy - 9); ctx.closePath(); ctx.fill(); } }
+  if (s.id === 'bear') { for (const ex of [-8, 7]) { ctx.fillStyle = s.body; ctx.beginPath(); ctx.arc(ex, hy - 9, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.fillStyle = s.belly; ctx.beginPath(); ctx.arc(ex, hy - 9, 2, 0, Math.PI * 2); ctx.fill(); } ctx.fillStyle = s.belly; ctx.beginPath(); ctx.ellipse(5, hy + 4, 6, 4.5, 0, 0, Math.PI * 2); ctx.fill(); }
+  if (s.id === 'pirate') { ctx.fillStyle = s.detail; ctx.beginPath(); ctx.moveTo(-14, hy - 6); ctx.quadraticCurveTo(0, hy - 24, 14, hy - 6); ctx.quadraticCurveTo(0, hy - 10, -14, hy - 6); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, hy - 12, 2.2, 0, Math.PI * 2); ctx.fill(); }
+  if (s.id === 'alien') { ctx.strokeStyle = s.dark; ctx.lineWidth = 2; for (const ex of [-5, 5]) { ctx.beginPath(); ctx.moveTo(ex * 0.6, hy - 10); ctx.lineTo(ex, hy - 19); ctx.stroke(); ctx.fillStyle = '#ff6ad5'; ctx.beginPath(); ctx.arc(ex, hy - 20, 2.6, 0, Math.PI * 2); ctx.fill(); } ctx.lineWidth = 2.2; ctx.strokeStyle = line; }
+  if (s.id === 'wizard') { ctx.fillStyle = s.body; ctx.beginPath(); ctx.moveTo(-14, hy - 6); ctx.lineTo(3 + Math.sin(t * 2) * 2, hy - 30); ctx.lineTo(14, hy - 6); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.fillStyle = s.detail; ctx.beginPath(); ctx.arc(1, hy - 17, 2.4, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-14, hy - 8, 28, 3); }
+  if (s.id === 'chef') { ctx.fillStyle = '#fff'; ctx.strokeStyle = line; rr(ctx, -8, hy - 14, 16, 6, 2); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(-5, hy - 17, 5, 0, Math.PI * 2); ctx.arc(0, hy - 20, 6, 0, Math.PI * 2); ctx.arc(5, hy - 17, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+  if (s.id === 'dino') { ctx.fillStyle = '#ffd25e'; for (let i = 0; i < 3; i++) { const sx = -8 + i * 5; ctx.beginPath(); ctx.moveTo(sx, hy - 9 + i); ctx.lineTo(sx + 2.5, hy - 15 + i); ctx.lineTo(sx + 5, hy - 9 + i); ctx.closePath(); ctx.fill(); } }
+  if (s.id === 'bee') { ctx.strokeStyle = s.detail; ctx.lineWidth = 1.6; for (const ex of [-3, 4]) { ctx.beginPath(); ctx.moveTo(ex, hy - 10); ctx.quadraticCurveTo(ex + 2, hy - 18, ex + 6, hy - 18); ctx.stroke(); ctx.fillStyle = s.detail; ctx.beginPath(); ctx.arc(ex + 6, hy - 18, 1.8, 0, Math.PI * 2); ctx.fill(); } ctx.lineWidth = 2.2; ctx.strokeStyle = line; }
 
   // faces (everyone blinks every few seconds, at their own moment)
   ctx.fillStyle = s.detail;
@@ -180,6 +205,14 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, skinIdx: number, x:
     case 'penguin': ctx.fillStyle = s.belly; ctx.beginPath(); ctx.ellipse(4, hy + 1, 6, 7, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#111'; eye(3, hy - 2, 1.6); eye(8, hy - 2, 1.6); ctx.fillStyle = s.detail; ctx.beginPath(); ctx.moveTo(8, hy + 1); ctx.lineTo(14, hy + 3); ctx.lineTo(8, hy + 5); ctx.fill(); break;
     case 'knight': ctx.fillStyle = '#1b1b24'; ctx.fillRect(-5, hy - 3, 14, 3); ctx.fillRect(2, hy - 3, 2, 8); break;
     case 'astronaut': break;
+    case 'cat': eye(1, hy - 2, 2.2); eye(7, hy - 2, 2.2); ctx.fillStyle = '#ff8fb8'; ctx.beginPath(); ctx.moveTo(8, hy + 2); ctx.lineTo(11, hy + 2); ctx.lineTo(9.5, hy + 4); ctx.fill(); ctx.strokeStyle = s.detail; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(9, hy + 4); ctx.lineTo(16, hy + 2); ctx.moveTo(9, hy + 5); ctx.lineTo(16, hy + 6); ctx.stroke(); ctx.lineWidth = 2.2; break;
+    case 'bear': eye(1, hy - 2); eye(7, hy - 2); ctx.fillStyle = s.detail; ctx.beginPath(); ctx.ellipse(9, hy + 3, 2.4, 1.8, 0, 0, Math.PI * 2); ctx.fill(); break;
+    case 'pirate': ctx.fillStyle = '#f2d2b6'; ctx.beginPath(); ctx.arc(3, hy + 1, 7, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = s.detail; eye(6, hy - 1, 1.8); ctx.fillRect(-1, hy - 4, 5, 5); ctx.strokeStyle = s.detail; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(-9, hy - 6); ctx.lineTo(4, hy - 2); ctx.stroke(); ctx.lineWidth = 2.2; break;
+    case 'alien': ctx.fillStyle = s.detail; ctx.beginPath(); ctx.ellipse(1, hy - 1, 3, 4.2, -0.3, 0, Math.PI * 2); ctx.ellipse(8, hy - 1, 3, 4.2, 0.3, 0, Math.PI * 2); ctx.fill(); break;
+    case 'wizard': ctx.fillStyle = '#f2d2b6'; ctx.beginPath(); ctx.arc(3, hy, 7, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = s.detail === '#ffd25e' ? '#1a1640' : s.detail; eye(1, hy - 2, 1.6); eye(6, hy - 2, 1.6); ctx.fillStyle = '#ece8ff'; ctx.beginPath(); ctx.moveTo(-2, hy + 3); ctx.lineTo(10, hy + 3); ctx.lineTo(4, hy + 13); ctx.closePath(); ctx.fill(); break;
+    case 'chef': ctx.fillStyle = '#f2d2b6'; ctx.beginPath(); ctx.arc(3, hy, 8, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = s.detail; eye(1, hy - 2, 1.6); eye(7, hy - 2, 1.6); ctx.strokeStyle = s.detail; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-1, hy + 4); ctx.quadraticCurveTo(4, hy + 1, 9, hy + 4); ctx.stroke(); ctx.lineWidth = 2.2; break;
+    case 'dino': eye(4, hy - 3, 2.2); ctx.fillStyle = s.dark; ctx.fillRect(6, hy + 4, 6, 1.5); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(7, hy + 5.5); ctx.lineTo(8, hy + 7.5); ctx.lineTo(9, hy + 5.5); ctx.fill(); break;
+    case 'bee': eye(2, hy - 2, 2.2); eye(8, hy - 2, 2.2); ctx.strokeStyle = s.detail; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.arc(5, hy + 2, 3, 0.2, Math.PI - 0.2); ctx.stroke(); ctx.lineWidth = 2.2; break;
     default: break;
   }
   if (tears) { ctx.fillStyle = '#7ad1ff'; for (const [tx, ph] of [[2, 0], [8, 0.5]]) { const k = ((t * 1.6 + ph) % 1); ctx.beginPath(); ctx.ellipse(tx, hy + 2 + k * 14, 1.6, 2.4, 0, 0, Math.PI * 2); ctx.fill(); } }
@@ -463,22 +496,39 @@ export function drawWireCell(ctx: CanvasRenderingContext2D, x: number, y: number
   ctx.save();
   ctx.translate(x + C / 2, y + C / 2);
   ctx.rotate((n * Math.PI) / 2);
-  // strip sits at the bottom of the rotated cell (against the support)
-  const by = C / 2 - th;
-  ctx.strokeStyle = permanent ? '#9aa0ad' : '#c9ced8';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i <= 4; i++) {
-    const cx = -C / 2 + i * 12;
-    ctx.moveTo(cx, by + th / 2);
-    ctx.arc(cx + 6, by + th / 2, 5, Math.PI, Math.PI * 3);
+  // everything stays inside the lethal strip at the bottom of the rotated cell (against the support): same size, clearer read
+  const by = C / 2 - th, mid = by + th / 2;
+  const L = -C / 2, R = C / 2;
+  // dark backing band: a silhouette that contrasts with light and dark terrain alike
+  ctx.fillStyle = 'rgba(12,8,22,.78)';
+  ctx.fillRect(L, by, C, th);
+  ctx.fillStyle = permanent ? 'rgba(255,190,60,.22)' : 'rgba(255,60,110,.28)';
+  ctx.fillRect(L, by, C, th);
+  // two twisted strands: thick dark outline under a bright steel line
+  const strand = (phase: number) => {
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++) {
+      const px = L + (i / 24) * C;
+      const py = mid + Math.sin((i / 24) * Math.PI * 4 + phase) * (th / 2 - 2);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+  };
+  for (const ph of [0, Math.PI]) {
+    strand(ph); ctx.strokeStyle = '#0b0712'; ctx.lineWidth = 3.6; ctx.stroke();
+    strand(ph); ctx.strokeStyle = permanent ? '#d8dbe4' : '#f4f6fb'; ctx.lineWidth = 1.6; ctx.stroke();
   }
-  ctx.stroke();
-  ctx.strokeStyle = permanent ? '#6c727f' : '#ff5e8a';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i < 4; i++) { const cx = -C / 2 + 6 + i * 12; ctx.moveTo(cx - 3, by + 1); ctx.lineTo(cx + 3, by + th - 1); ctx.moveTo(cx + 3, by + 1); ctx.lineTo(cx - 3, by + th - 1); }
-  ctx.stroke();
+  // barbs: four outlined X knots in a hot warning colour
+  const barb = permanent ? '#ffb43c' : '#ff3f6e';
+  for (let i = 0; i < 4; i++) {
+    const cx = L + 6 + i * 12;
+    const knot = () => { ctx.beginPath(); ctx.moveTo(cx - 4, by + 0.5); ctx.lineTo(cx + 4, by + th - 0.5); ctx.moveTo(cx + 4, by + 0.5); ctx.lineTo(cx - 4, by + th - 0.5); };
+    knot(); ctx.strokeStyle = '#0b0712'; ctx.lineWidth = 3.4; ctx.stroke();
+    knot(); ctx.strokeStyle = barb; ctx.lineWidth = 1.8; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx, mid, 1.3, 0, Math.PI * 2); ctx.fill();
+  }
+  // crisp edge lines so the strip's extent is unmistakable
+  ctx.strokeStyle = barb; ctx.globalAlpha *= 0.85; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(L, by + 0.5); ctx.lineTo(R, by + 0.5); ctx.stroke();
   ctx.restore();
 }
 
