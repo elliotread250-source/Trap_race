@@ -2,7 +2,7 @@
 import { CELL, HAZARD, PHYS, TICK_HZ } from '../../shared/config';
 import { DIRS, rotDirIndex, type Rot } from '../../shared/grid';
 import {
-  cellCenter, laserBeamRect, laserCells, laserState, launcherDir, moverPathLen, moverRect, muzzle, pendulumPos, pendulumSweep, rspikeState, sawPos,
+  cellCenter, laserBeamRect, laserCells, laserState, launcherDir, moverBaseRect, moverPathLen, moverRect, muzzle, onMover, pendulumPos, pendulumSweep, rspikeState, sawPos,
 } from '../../shared/hazards';
 import { getItem } from '../../shared/items';
 import type { MapDef } from '../../shared/maps';
@@ -370,9 +370,20 @@ export class Renderer {
         drawItem(ctx, def, o.cells.map(([x, y]) => [x - minX, y - minY]), minX * C + dx + (o.cells[0][0] - minX) * 0, minY * C + dy - (o.cells[0][1] - minY) * 0, o.rot, { owner: col, t });
         continue;
       }
-      if (def.kind === 'crumble' && broken.has(o.id)) {
-        ctx.save(); ctx.globalAlpha = 0.2; drawItem(ctx, def, o.cells, 0, 0, o.rot, { owner: col, t }); ctx.restore();
-        continue;
+      if (def.kind === 'crumble' && broken.has(o.id)) continue; // the whole platform has fallen away for the rest of the round
+      if (def.kind === 'wire') {
+        const sup = onMover(world, o);
+        if (sup) {
+          // wire riding a moving platform is drawn at the platform's current offset from its starting pose
+          let dx = 0, dy = 0;
+          if (getItem(sup.item).kind === 'shuttle') { const tick = demo ? 0 : g.renderTick(); const a = childRect(sup, 0, tick), b = childRect(sup, 0, 0); dx = a.x - b.x; dy = a.y - b.y; }
+          else { const ph = hzByObj.get(sup.id) ?? (sim ? 0 : t); const len = sim ? sim.movers.find(m => m.o.id === sup.id)?.hz?.pathLen ?? moverPathLen() : moverPathLen(); const a = moverRect(sup, demo ? 0 : ph, len), b = moverBaseRect(sup); dx = a.x - b.x; dy = a.y - b.y; }
+          ctx.save(); ctx.translate(dx, dy);
+          drawItem(ctx, def, o.cells, 0, 0, o.rot, { owner: col, t, variant: o.variant, mapProv: false });
+          ctx.restore();
+          if (demo && targets.has(o.id)) { ctx.save(); ctx.fillStyle = 'rgba(255,90,40,.38)'; for (const [x, y] of o.cells) ctx.fillRect(x * C, y * C, C, C); ctx.restore(); }
+          continue;
+        }
       }
       let state: string | undefined;
       if (def.kind === 'rspikes') state = rspikeState(phase);

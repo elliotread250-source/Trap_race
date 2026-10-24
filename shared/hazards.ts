@@ -155,10 +155,19 @@ export function staticLethal(world: World): StaticLethal {
   for (const o of world.objects.values()) {
     const k = getItem(o.item).kind;
     if (k === 'oval') ovals.push({ ov: ovalShape(o), owner: o.owner, src: o.id });
-    if (k === 'wire') for (const [x, y] of o.cells) rects.push({ r: wireStripPx(x, y, o.rot), owner: o.owner, src: o.id });
+    if (k === 'wire' && !onMover(world, o)) for (const [x, y] of o.cells) rects.push({ r: wireStripPx(x, y, o.rot), owner: o.owner, src: o.id });
     if (k === 'blackhole') { const c = cellCenter(o.x, o.y); circles.push({ x: c.x, y: c.y, r: HAZARD.holeCore, owner: o.owner, src: o.id }); }
   }
   return { rects, circles, ovals };
+}
+
+/** The Moving Platform or Shuttle Block a barbed wire rides on (its lethal strips move with it), or null. */
+export function onMover(world: World, o: PlacedObject): PlacedObject | null {
+  if (!o.attach || o.attach === 'terrain') return null;
+  const s = world.objects.get(o.attach);
+  if (!s) return null;
+  const k = getItem(s.item).kind;
+  return k === 'shuttle' || k === 'moving' ? s : null;
 }
 
 export function springRect(o: PlacedObject): Rect { return springPadPx(o.x, o.y, o.rot); }

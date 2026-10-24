@@ -89,8 +89,8 @@ describe('shuttle block', () => {
     expect(checkPlacement(w, { item: 'block_1x1', x: 12, y: 10, rot: 0, variant: 0 }).ok).toBe(true); // in the lane, away from its start
     expect(checkPlacement(w, { item: 'block_1x1', x: 12, y: 9, rot: 0, variant: 0 }).ok).toBe(true); // no rider headroom rule
     expect(checkPlacement(w, { item: 'block_1x1', x: 9, y: 10, rot: 0, variant: 0 }).reason).toMatch(/Overlaps another solid object/); // its start body is an ordinary object
-    expect(checkPlacement(w, { item: 'wire_1', x: 8, y: 9, rot: 0, variant: 0 }).ok).toBe(false);
-    expect(checkPlacement(w, { item: 'wire_1', x: 8, y: 9, rot: 0, variant: 0 }).reason).toMatch(/moving platforms|path/);
+    // barbed wire may ride a shuttle (batch update); snipers still may not
+    expect(checkPlacement(w, { item: 'wire_1', x: 8, y: 9, rot: 0, variant: 0 }).ok).toBe(true);
     expect(checkPlacement(w, { item: 'sniper', x: 8, y: 9, rot: 0, variant: 0 }).ok).toBe(false);
     expect(checkPlacement(w, { item: 'shuttle', x: 5, y: 12, rot: 0, variant: 0 }).reason).toMatch(/safety zone/); // its route may not enter the start zone
     expect(checkPlacement(w, { item: 'shuttle', x: 34, y: 14, rot: 0, variant: 0 }).reason).toMatch(/leaves the map|safety zone/); // nor the map edge

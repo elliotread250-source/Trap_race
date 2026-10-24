@@ -597,6 +597,14 @@ function drawLauncher(ctx: CanvasRenderingContext2D, def: ItemDef, x: number, y:
     ctx.restore();
     return;
   }
+  if (def.kind === 'crossbow') {
+    // a solid mount block you can stand on and wall-jump off; the bow is fixed to its face
+    ctx.fillStyle = '#5b4a3a'; ctx.fillRect(x + 2, y + 2, C - 4, C - 4);
+    ctx.fillStyle = '#7a6550'; ctx.fillRect(x + 4, y + 4, C - 8, 6);
+    ctx.fillStyle = '#3e3126'; ctx.fillRect(x + 2, y + C - 9, C - 4, 7);
+    ctx.strokeStyle = 'rgba(15,10,6,.7)'; ctx.lineWidth = 2; ctx.strokeRect(x + 2, y + 2, C - 4, C - 4);
+    ctx.fillStyle = '#a89a8a'; for (const [bx, by] of [[9, 15], [C - 9, 15], [9, C - 14], [C - 9, C - 14]]) { ctx.beginPath(); ctx.arc(x + bx, y + by, 2, 0, Math.PI * 2); ctx.fill(); }
+  }
   ctx.translate(cx, cy);
   if (def.kind === 'cannon') {
     const n = rot;

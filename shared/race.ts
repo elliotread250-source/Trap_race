@@ -4,12 +4,12 @@ import { circleRect, rectsOverlap, segRect, type Rect, type Vec } from './grid';
 import { closestOnSegment, fieldAccel, traceShot, type HoleInfo, type ShotSeg } from './field';
 import {
   cellCenter, laserBeamRect, laserCells, laserInOff, laserState, launcherDir, moverPathLen, moverRect, muzzle,
-  ovalHitsRect, pendulumPos, rspikeParts, rspikeState, sawPos, springDir, springRect, staticLethal, type StaticLethal,
+  moverBaseRect, onMover, ovalHitsRect, pendulumPos, rspikeParts, rspikeState, sawPos, springDir, springRect, staticLethal, type StaticLethal,
 } from './hazards';
 import { getItem, type PowerType } from './items';
 import { childCount, childId, childRect } from './movers';
 import { bodyCenter, bodyRect, newBody, stepBody, type Body, type Mover, type PhysEnv } from './physics';
-import { spikeStripPx, type PlacedObject, type World } from './world';
+import { spikeStripPx, wireStripPx, type PlacedObject, type World } from './world';
 
 export type PlayerStatus = 'racing' | 'finished' | 'dead' | 'timeout';
 
@@ -88,6 +88,8 @@ export class RaceSim {
   private lethal: StaticLethal;
   private holes: HoleInfo[] = [];
   private springs: { o: PlacedObject; r: Rect }[] = [];
+  /** barbed wire riding a moving platform: its strips follow the platform's displacement from its starting pose */
+  moverWires: { o: PlacedObject; m: SimMover; base: Rect }[] = [];
   over = false;
 
   constructor(world: World, playerIds: string[], opts: RaceOptions) {
@@ -141,6 +143,18 @@ export class RaceSim {
       this.movers.push({ id: childId(o, i), o, child: i, hz: null, rect: r, prev: { ...r } });
     }
     this.lethal = staticLethal(world);
+    for (const o of world.objects.values()) {
+      if (getItem(o.item).kind !== 'wire') continue;
+      const sup = onMover(world, o);
+      const m = sup ? this.movers.find(mm => mm.o.id === sup.id) : undefined;
+      if (sup && m) this.moverWires.push({ o, m, base: m.hz ? moverBaseRect(sup) : childRect(sup, 0, 0) });
+    }
+  }
+
+  /** Lethal strips of a wire riding a moving platform, where they are this tick (or for a given platform rect). */
+  moverWireRects(w: { o: PlacedObject; base: Rect }, rect: Rect): Rect[] {
+    const dx = rect.x - w.base.x, dy = rect.y - w.base.y;
+    return w.o.cells.map(([x, y]) => { const r = wireStripPx(x, y, w.o.rot); return { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }; });
   }
 
   /** Mover poses at an arbitrary tick: kinematic bodies exactly, legacy ones at their current phase. */
@@ -523,6 +537,8 @@ export class RaceSim {
       for (const l of this.lethal.ovals) if (ovalHitsRect(l.ov, br)) { this.lethalHit(p, l.owner, 'oval', l.src); break; }
       if (p.status !== 'racing') continue;
       for (const l of this.lethal.circles) if (circleRect(l.x, l.y, l.r, br)) { this.lethalHit(p, l.owner, 'blackhole', l.src); break; }
+      if (p.status !== 'racing') continue;
+      for (const mw of this.moverWires) if (this.moverWireRects(mw, mw.m.rect).some(r => rectsOverlap(br, r))) { this.lethalHit(p, mw.o.owner, 'wire', mw.o.id); break; }
       if (p.status !== 'racing') continue;
       for (const h of this.hz) {
         let hit = false;

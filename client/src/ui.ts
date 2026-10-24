@@ -31,9 +31,11 @@ const previews = new Set<{ canvas: HTMLCanvasElement; skin: number; color: strin
 /** Extra build-bar guidance for the items whose rules are spatial rather than visible in their footprint. */
 function buildTip(kind: string, rotationNote: string): string {
   if (kind === 'shuttle' || kind === 'moving') return 'Shaded cells show its whole path. It passes through walls and blocks, may start partly inside a wall (amber), and crushes anyone it pins. ' + rotationNote;
-  if (kind === 'wheel') return 'Green gondolas start in open space (one is enough), amber ones start inside blocks and orbit through them. The centre stays open. ' + rotationNote;
+  if (kind === 'wheel') return 'Green gondolas start outside walls (one is enough), amber ones start inside walls and orbit through them. The pivot may sit in a wall. ' + rotationNote;
   if (kind === 'bomb') return 'Moving platforms freeze at their starting pose while you aim: hit a shuttle, any gondola or a wheel\'s pivot to remove the whole thing.';
-  if (kind === 'wire' || kind === 'sniper') return rotationNote + ' Nothing can bolt onto moving platforms.';
+  if (kind === 'wire') return rotationNote + ' Bolt it to a Moving Platform or Shuttle Block and it rides along, through walls too.';
+  if (kind === 'sniper') return rotationNote + ' Snipers can\u2019t bolt onto moving platforms.';
+  if (kind === 'saw') return 'The rail takes up no grid squares: lay it through blocks and items, and build over it. The saw passes straight through. ' + rotationNote;
   return rotationNote;
 }
 
@@ -269,7 +271,7 @@ export class UI {
       h('h3', {}, 'Build'),
       h('p', {}, 'Everything snaps to the grid. Green means legal, red tells you why not. Items can’t overlap anything, and can’t go in the striped safety zones around START and FINISH. Nothing checks that the course stays finishable: you may seal it, and if you do, bombs are how it gets reopened. Bombs remove player-built objects (never map terrain or map wire). Press Rehearse to test the course; it never scores.'),
       h('h3', {}, 'Moving platforms'),
-      h('p', {}, `The Shuttle Block slides ${MOVERS.shuttleTravelCells} cells and back every ${MOVERS.shuttlePeriodTicks / 60}s, the Moving Platform glides ${HAZARD.movingPathCells} cells end to end, and the Ferris Wheel carries four level gondolas around a pivot you can pass through, one lap every ${MOVERS.wheelPeriodTicks / 60}s. They carry you exactly as they move and restart from the same pose at every GO. Walls and blocks do not stop them: they slide straight through. A platform may start partly inside a wall but never wholly (a wheel needs one gondola in open space). Get squeezed between a moving platform and something solid and you die; if another player owns the platform it counts as their trap kill. Jumping off keeps no platform speed. Bombs hit them at their starting pose, which the build view freezes on while you hold a bomb.`),
+      h('p', {}, `The Shuttle Block slides ${MOVERS.shuttleTravelCells} cells and back every ${MOVERS.shuttlePeriodTicks / 60}s, the Moving Platform glides ${HAZARD.movingPathCells} cells end to end, and the Ferris Wheel carries four level gondolas around a pivot you can pass through, one lap every ${MOVERS.wheelPeriodTicks / 60}s. They carry you exactly as they move and restart from the same pose at every GO. Walls and blocks do not stop them: they slide straight through. A platform may start partly inside a wall but never wholly (a wheel needs one gondola outside walls). Barbed wire can be bolted to Moving Platforms and Shuttle Blocks and rides with them. Get squeezed between a moving platform and something solid and you die; if another player owns the platform it counts as their trap kill. Jumping off keeps no platform speed. Bombs hit them at their starting pose, which the build view freezes on while you hold a bomb.`),
       h('h3', {}, 'Big maps'),
       h('p', {}, 'The Great Oak can’t be crossed until someone builds a way over the tree: while there is no full route, every draft guarantees building cards, races are short scouting runs, and you may place anything that doesn’t cut players off from the furthest point they can reach. Under the Mountain is sealed to the sky: the only way on is through the cave.'),
       h('h3', {}, 'Controls'),

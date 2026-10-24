@@ -441,6 +441,11 @@ export function edgeSafe(e: NavEdge, sim: RaceSim): boolean {
       if (h.kind === 'saw') { const s = sawPos(h.o, ph); if (circleRect(s.x, s.y, HAZARD.sawR + 6, br)) return false; }
       if (h.kind === 'pendulum') { const s = pendulumPos(h.o, ph).ball; if (circleRect(s.x, s.y, HAZARD.pendulumBallR + 6, br)) return false; }
     }
+    for (const mw of sim.moverWires) {
+      // barbed wire riding a platform: where its strips will be when the bot gets there
+      const r = mw.m.hz ? mw.m.rect : childRect(mw.m.o, mw.m.child, sim.tick + f);
+      if (sim.moverWireRects(mw, r).some(s => rectsOverlap(br, s))) return false;
+    }
     for (const pr of sim.projectiles) {
       let px = pr.x + pr.vx * t, py = pr.y + pr.vy * t;
       if (pr.kind === 'cannon') py += 0.5 * HAZARD.cannonGravity * t * t;

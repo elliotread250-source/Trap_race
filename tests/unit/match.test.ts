@@ -180,7 +180,9 @@ describe('large maps with six players', () => {
         m.pool[0].item = 'shuttle'; m.pool[1].item = 'wheel';
       }
       if (m.phase === 'race' && m.race && m.race.tick === 1) {
-        if (!m.courseOpen) scoutRaces++;
+        // only scouting runs before the first full route count: a later wheel lane over the route can make the
+        // conservative probe call the course shut again for a round (advisory only; players can still cross)
+        if (!m.courseOpen && opened < 0) scoutRaces++;
         else if (opened < 0) opened = m.round;
         // every race starts every moving platform at its GO pose
         for (const mv of m.race.movers) if (!mv.hz) expect(mv.prev).toEqual(childRect(mv.o, mv.child, 0));

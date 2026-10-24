@@ -114,6 +114,7 @@ export class World {
       for (const [x, y] of o.cells) {
         if (!this.inBounds(x, y)) continue;
         const i = this.idx(x, y);
+        if (def.overlay) continue; // saw rails and ice take up no grid squares (see applyOverlays)
         this.occ[i] = o.id;
         if (def.kind === 'moving' || kin) continue; // dynamic, not in the static grid
         if (def.solid || (baseKeys && baseKeys.has(i))) { this.coll[i] = C_SOLID; this.collObj[i] = o.id; }

@@ -69,6 +69,9 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
       if (o.prov === 'map') { permanent = true; continue; } // map-authored wire is indestructible
       hit.add(o.id);
     }
+    // overlays (saw rails, ice) take no grid squares, so look them up by their own cells
+    const blastKeys = new Set(cells.map(c => `${c[0]},${c[1]}`));
+    for (const o of world.objects.values()) if (o.prov === 'player' && getItem(o.item).overlay && o.cells.some(c => blastKeys.has(`${c[0]},${c[1]}`))) hit.add(o.id);
     // moving platforms are hit at their GO pose (the pose the build view freezes on while a bomb is selected)
     const blast: Rect = { x: req.x * CELL, y: req.y * CELL, w: n * CELL, h: n * CELL };
     for (const o of world.kinematic) if (o.prov === 'player' && referenceHit(o, blast)) hit.add(o.id);
@@ -81,12 +84,18 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
   let cells = fp.cells;
   let trimmed = 0;
   if (def.kind === 'wire' || def.kind === 'sniper') {
-    // nothing bolts onto moving platforms: attachments on moving bodies aren't supported
+    // barbed wire may ride a Moving Platform or Shuttle Block (it moves with it); snipers never bolt onto moving bodies,
+    // and nothing attaches to Ferris wheel gondolas
     const n = def.kind === 'sniper' ? [0, 1] : [[0, 1], [-1, 0], [0, -1], [1, 0]][rot];
     const sx = req.x + n[0], sy = req.y + n[1];
     const id = world.occAt(sx, sy);
     const so = id && id !== TERRAIN_ID ? world.objects.get(id) : null;
-    if (so && isKinematic(so)) return fail(`${def.kind === 'sniper' ? 'Snipers' : 'Barbed wire'} can't attach to moving platforms`, [[req.x, req.y]]);
+    const sk = so ? getItem(so.item).kind : null;
+    if (so && (sk === 'wheel' || (def.kind === 'sniper' && isKinematic(so)))) return fail(def.kind === 'sniper' ? 'Snipers can\u2019t attach to moving platforms' : 'Barbed wire can\u2019t attach to Ferris wheels', [[req.x, req.y]]);
+    if (def.kind === 'wire' && so && (sk === 'shuttle' || sk === 'moving')) {
+      cells = moverWireCells(world, req.x, req.y, rot, def.wireLength ?? 1, so.id);
+      fp.support = cells.length ? so.id : null;
+    }
   }
   if (def.kind === 'wire') {
     trimmed = (def.wireLength ?? 1) - cells.length;
@@ -97,10 +106,11 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
     if (!world.inBounds(x, y) || !inBuild(x, y)) return fail('Outside the build area', cells);
   }
   // Platforms that glide through walls may start partly inside terrain, never wholly (checked below); everything else is ordinary occupancy.
-  const wallOk = def.kind === 'shuttle' || def.kind === 'moving';
+  const wallOk = def.kind === 'shuttle' || def.kind === 'moving' || def.kind === 'wheel'; // a wheel's pivot may sit inside a wall
   const wallCells: Cell[] = [];
   for (const [x, y] of cells) {
-    const o = world.occAt(x, y);
+    // overlays only collide with map terrain here (their own kind is checked below)
+    const o = def.overlay ? (world.occAt(x, y) === TERRAIN_ID ? TERRAIN_ID : '') : world.occAt(x, y);
     if (o === TERRAIN_ID) {
       const t = world.terrainAt(x, y);
       if (wallOk && (t === 1 || t === 2)) { wallCells.push([x, y]); continue; }
@@ -112,7 +122,14 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
       return fail(od?.solid ? 'Overlaps another solid object' : `Overlaps ${od ? 'a ' + od.name : 'another item'}`, cells);
     }
   }
-  if (wallOk && wallCells.length === cells.length) return fail('A moving platform can’t start completely inside a wall', cells, { wallCells });
+  if (wallOk && def.kind !== 'wheel' && wallCells.length === cells.length) return fail('A moving platform can’t start completely inside a wall', cells, { wallCells });
+  if (def.overlay) {
+    const mine = new Set(cells.map(c => `${c[0]},${c[1]}`));
+    for (const o of world.objects.values()) {
+      if (getItem(o.item).kind !== def.kind) continue;
+      if (o.cells.some(c => mine.has(`${c[0]},${c[1]}`))) return fail(`Overlaps another ${def.name}`, cells);
+    }
+  }
   for (const [x, y] of cells) {
     if (world.isProtectedCell(x, y)) {
       const s = world.protectedCells[0];
@@ -139,18 +156,21 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
     }
     const extra: Partial<PlaceCheck> = { sweep: shown, wallCells };
     if (def.kind === 'wheel') {
-      // at least one whole gondola must start in legal open space; the others may begin inside blocks and terrain and still orbit
+      // at least one gondola must start outside walls (map terrain and solid blocks); it may overlap non-solid items. The
+      // others may begin inside walls and still orbit through them.
       const valid: number[] = [], overlap: Cell[] = [];
+      const wall = (x: number, y: number) => { const t = world.terrainAt(x, y); return t === 1 || t === 2 || world.coll[world.idx(x, y)] === C_SOLID; };
       for (let i = 0; i < childCount(probe); i++) {
         let ok = true;
         for (const [x, y] of cellsTouched(childRect(probe, i, 0))) {
-          const bad = !world.inBounds(x, y) || !inBuild(x, y) || world.occAt(x, y) !== '' || world.isProtectedCell(x, y);
-          if (bad) { ok = false; if (world.inBounds(x, y) && world.occAt(x, y) !== '') overlap.push([x, y]); }
+          const bad = !world.inBounds(x, y) || !inBuild(x, y) || world.isProtectedCell(x, y) || wall(x, y);
+          if (bad) ok = false;
+          if (world.inBounds(x, y) && world.occAt(x, y) !== '') overlap.push([x, y]);
         }
         if (ok) valid.push(i);
       }
       extra.validChildren = valid; extra.overlapCells = overlap;
-      if (valid.length === 0) return fail('At least one gondola has to start in open space', cells, { sweep: shown, validChildren: valid, overlapCells: overlap });
+      if (valid.length === 0) return fail('At least one gondola has to start outside walls', cells, { sweep: shown, validChildren: valid, overlapCells: overlap });
     }
     if (world.playerObjectCount() >= MATCH.maxPlacedObjects) return fail('The course is full', cells, extra);
     return { ok: true, cells, support: null, trimmed: 0, region: { x: bbox.x - CELL, y: bbox.y - CELL, w: bbox.w + 2 * CELL, h: bbox.h + 2 * CELL }, ...extra };
@@ -174,6 +194,32 @@ export function checkPlacement(world: World, req: PlaceRequest): PlaceCheck {
   if (world.playerObjectCount() >= MATCH.maxPlacedObjects) return fail('The course is full', cells);
   const region = regionForCells(cells, def.kind === 'blackhole' ? HAZARD.holeRadius + CELL : def.kind === 'pendulum' ? HAZARD.pendulumArm + CELL : CELL);
   return { ok: true, cells, support, wireLen: def.kind === 'wire' ? cells.length : undefined, trimmed, region };
+}
+
+/**
+ * Barbed wire on a Moving Platform or Shuttle Block: segments along one face of the platform's starting body, trimmed to
+ * the contiguous run that is supported by that same platform and starts in free space. The wire rides with the platform.
+ */
+export function moverWireCells(world: World, ax: number, ay: number, rot: Rot, len: number, moverId: string): Cell[] {
+  const n = DIRS[rotDirIndex(0, rot)], t = DIRS[rotDirIndex(1, rot)];
+  const out: Cell[] = [];
+  for (let i = 0; i < len; i++) {
+    const cx = ax + t.x * i, cy = ay + t.y * i;
+    if (!world.inBounds(cx, cy) || world.occAt(cx - n.x, cy - n.y) !== moverId) break;
+    const tt = world.terrainAt(cx, cy);
+    if (tt === 1 || tt === 2 || world.occAt(cx, cy) !== '') break;
+    out.push([cx, cy]);
+  }
+  return out;
+}
+
+/** The moving platform a placed wire rides on, or null for wire bolted to stationary blocks and terrain. */
+export function wireMover(world: World, o: PlacedObject): PlacedObject | null {
+  if (!o.attach || o.attach === TERRAIN_ID) return null;
+  const s = world.objects.get(o.attach);
+  if (!s) return null;
+  const k = getItem(s.item).kind;
+  return k === 'shuttle' || k === 'moving' ? s : null;
 }
 
 export function regionForCells(cells: Cell[], pad: number): Rect {

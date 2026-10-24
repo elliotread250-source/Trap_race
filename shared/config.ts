@@ -3,7 +3,7 @@
 export const GAME_TITLE = 'Trap Race';
 export const PROTOCOL_VERSION = 5;
 /** Version of the item catalogue and stored world data. Older snapshots are migrated (see migrateSnapshot in world.ts). */
-export const CONTENT_VERSION = 2;
+export const CONTENT_VERSION = 3;
 
 export const CELL = 48; // pixels per grid cell; one authoritative grid for every map
 export const TICK_HZ = 60;
@@ -146,8 +146,8 @@ export const HAZARD = {
  * client prediction, rendering and bots all agree. Periods are whole ticks so the motion repeats exactly.
  */
 export const MOVERS = {
-  shuttleTravelCells: 6, // the 2x1 block slides 6 cells past its anchor and back (was 3: travel doubled)
-  shuttlePeriodTicks: 384, // 6.4 s round trip (was 3.2 s for half the distance): the cosine-eased peak stays ~141 px/s
+  shuttleTravelCells: 9, // the 2x1 block slides 9 cells past its anchor and back (was 6, before that 3)
+  shuttlePeriodTicks: 576, // 9.6 s round trip (was 6.4 s for 6 cells): the cosine-eased peak stays ~141 px/s
   wheelRadiusCells: 3, // platform centres sit 144 px from the pivot: adjacent gondolas never touch, riders keep headroom
   wheelPeriodTicks: 480, // one lap every 8 s (tangential speed ~113 px/s, slower than walking)
   inheritVelocity: 0, // jumping off a moving platform keeps no platform velocity (bounded at 0 px/s)

@@ -102,7 +102,7 @@ describe('moving platforms and walls', () => {
     const sim = new RaceSim(w, ['a'], { roundKey: 's', maxTicks: 4000 });
     at(sim, 'a', 3 * C, floorY());
     run(sim, MOVERS.shuttlePeriodTicks / 2);
-    expect(sim.movers[0].rect.x).toBeCloseTo(25 * C, 6);
+    expect(sim.movers[0].rect.x).toBeCloseTo((19 + MOVERS.shuttleTravelCells) * C, 6);
   });
 
   it('runs the 3x1 Moving Platform its full new length straight through a wall', () => {
@@ -115,18 +115,18 @@ describe('moving platforms and walls', () => {
     expect(checkPlacement(w, { item: 'moving', x: 34, y: 5, rot: 0, variant: 0 }).reason).toMatch(/leave the map/);
   });
 
-  it('travels further: 2x1 shuttle doubled (3 -> 6 cells) and 3x1 platform exactly two cells longer (4 -> 6)', () => {
+  it('travels further: 2x1 shuttle 3 -> 6 -> 9 cells (batch update) and 3x1 platform exactly two cells longer (4 -> 6)', () => {
     const w = lab();
     const sh = put(w, 'shuttle', 4, 6);
     const ends = childRect(sh, 0, MOVERS.shuttlePeriodTicks / 2).x - childRect(sh, 0, 0).x;
-    expect(ends / C).toBe(6);
-    expect(MOVERS.shuttleTravelCells).toBe(2 * 3);
+    expect(ends / C).toBe(9);
+    expect(MOVERS.shuttleTravelCells).toBe(9);
     expect(moverPathLen() / C).toBe(4 + 2);
     // speed kept: the shuttle's peak is still ~141 px/s
     let peak = 0;
     for (let t = 1; t < MOVERS.shuttlePeriodTicks; t++) peak = Math.max(peak, Math.abs(childRect(sh, 0, t).x - childRect(sh, 0, t - 1).x) * TICK_HZ);
     expect(peak).toBeLessThan(145);
-    expect(sweepOf(sh).sweep).toHaveLength(2 + 6);
+    expect(sweepOf(sh).sweep).toHaveLength(2 + MOVERS.shuttleTravelCells);
   });
 });
 
