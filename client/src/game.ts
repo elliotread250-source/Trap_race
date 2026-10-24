@@ -5,7 +5,7 @@ import { childRect } from '../../shared/movers';
 import { getItem } from '../../shared/items';
 import { cloneBody, type Body } from '../../shared/physics';
 import { Predictor } from './predict';
-import { checkPlacement, type PlaceCheck, type PlaceRequest } from '../../shared/placement';
+import { applyBomb, applyPlacement, checkPlacement, makeObject, type PlaceCheck, type PlaceRequest } from '../../shared/placement';
 import type { Card, ClientMsg, DraftStage, Phase, RoomInfo, ServerMsg } from '../../shared/protocol';
 import { applyBodySnap, RaceSim, type PlayerSnap, type RaceEvent, type RaceSnapshot, type SimMover } from '../../shared/race';
 import type { PlayerTally, RoundRow } from '../../shared/scoring';
@@ -73,6 +73,11 @@ export class GameClient {
   check: PlaceCheck | null = null;
   awaitingPlace = false;
   rehearsal: { sim: RaceSim; acc: number; prevJump: boolean } | null = null;
+  /**
+   * Single-player sandbox: a local world on any map, no scoring and no timers. `placing` is the item being placed
+   * (play pauses while placing), `menu` is the M item menu.
+   */
+  sandbox: { mapId: string; sim: RaceSim; acc: number; menu: boolean; placing: string | null; deaths: number; finishes: number } | null = null;
   onChange: () => void = () => {};
   onSessionEnded: () => void = () => {};
   private practiceStarted = false;
@@ -118,6 +123,7 @@ export class GameClient {
   }
 
   reset() {
+    this.sandbox = null;
     this.you = ''; this.code = ''; this.room = null; this.phase = 'lobby'; this.world = null; this.race = null; this.cards = [];
     this.results = null; this.matchEnd = null; this.pr = null; this.rehearsal = null; this.fx = []; this.practiceStarted = false;
   }
@@ -276,6 +282,7 @@ export class GameClient {
     const now = performance.now();
     this.toasts = this.toasts.filter(t => t.until > now);
     this.fx = this.fx.filter(f => now - f.t0 < 1500);
+    if (this.sandbox) { this.updateSandbox(dtMs); return; }
     if (this.rehearsal) { this.updateRehearsal(dtMs); return; }
     const race = this.race;
     if (!race) return;
@@ -309,6 +316,7 @@ export class GameClient {
    * platform we stand on), the interpolation tick while spectating, sim time in rehearsal, a local clock while building.
    */
   renderTick(): number {
+    if (this.sandbox) return this.sandbox.sim.tick + this.sandbox.acc / STEP;
     if (this.rehearsal) return this.rehearsal.sim.tick + this.rehearsal.acc / STEP;
     if (this.race && (this.phase === 'race' || this.phase === 'results' || this.phase === 'countdown')) {
       if (this.phase === 'countdown') return 0;
@@ -367,7 +375,7 @@ export class GameClient {
   }
 
   // ------------------------------------------------ building
-  myItem(): string | null { return this.myCard?.item ?? null; }
+  myItem(): string | null { return this.sandbox ? this.sandbox.placing : this.myCard?.item ?? null; }
 
   setCursor(x: number, y: number) {
     if (x === this.cursor.x && y === this.cursor.y) return;
@@ -401,11 +409,12 @@ export class GameClient {
 
   refreshCheck() {
     const r = this.request();
-    if (!this.world || !r || this.phase !== 'build' || this.placedThisRound) { this.check = null; return; }
+    if (!this.world || !r || !this.isBuilding() || (!this.sandbox && this.placedThisRound)) { this.check = null; return; }
     this.check = checkPlacement(this.world, r);
   }
 
   confirmPlace() {
+    if (this.sandbox) { if (this.isBuilding()) this.sandboxPlace(); return; }
     if (this.phase !== 'build' || this.placedThisRound || this.awaitingPlace) return;
     const r = this.request();
     if (!r) return;
@@ -414,6 +423,81 @@ export class GameClient {
     this.awaitingPlace = true;
     this.send({ t: 'place', round: this.round, x: r.x, y: r.y, rot: r.rot, variant: r.variant });
     this.onChange();
+  }
+
+  // ------------------------------------------------ sandbox (local only, never scored)
+  startSandbox(mapId: string) {
+    this.closeTransport();
+    this.you = 'me'; this.code = 'SANDBOX';
+    this.world = new World(mapId);
+    this.room = {
+      code: 'SANDBOX', mode: 'practice', mapId, target: 0, roundLimit: 0, phase: 'race', round: 1, youId: 'me', inviteable: false,
+      members: [{ id: 'me', name: settings.name || 'Player', skin: settings.skin, color: 0, bot: false, ready: true, connected: true, host: true, spectator: false }],
+    };
+    this.phase = 'race'; this.round = 1; this.target = 0; this.roundLimit = 0;
+    this.sandbox = { mapId, sim: this.newSandboxSim(), acc: 0, menu: false, placing: null, deaths: 0, finishes: 0 };
+    this.status = 'local';
+    this.onChange();
+  }
+  private newSandboxSim(): RaceSim { return new RaceSim(this.world!.clone(), ['me'], { roundKey: 'sandbox' + Math.random(), maxTicks: 60 * 60 * 60, humans: 1 }); }
+  /** Respawn at the start (T, death or finish), keeping everything that has been built. */
+  sandboxRespawn() { if (this.sandbox) { this.sandbox.sim = this.newSandboxSim(); this.sandbox.acc = 0; this.onChange(); } }
+  /** Rebuild the sim on the changed world but keep the player where they are. */
+  private sandboxRefresh() {
+    const sb = this.sandbox!;
+    const old = sb.sim.players[0];
+    sb.sim = this.newSandboxSim();
+    if (old.status === 'racing') Object.assign(sb.sim.players[0].body, old.body);
+  }
+  toggleSandboxMenu() { const sb = this.sandbox; if (!sb) return; sb.menu = !sb.menu; if (sb.menu) sb.placing = null; this.onChange(); }
+  sandboxPick(item: string | null) {
+    const sb = this.sandbox; if (!sb) return;
+    sb.menu = false; sb.placing = item; this.rot = 0; this.variant = 0;
+    if (!item) this.sandboxRefresh();
+    this.refreshCheck(); this.onChange();
+  }
+  sandboxClear() {
+    if (!this.sandbox || !this.world) return;
+    for (const [id, o] of [...this.world.objects]) if (o.prov === 'player') this.world.objects.delete(id);
+    this.world.rebuild(); this.sandboxRefresh(); this.refreshCheck(); this.onChange();
+  }
+  /** In sandbox every legal placement goes straight in, as many as you like. */
+  private sandboxPlace() {
+    const sb = this.sandbox!, r = this.request();
+    if (!r || !this.world) return;
+    const chk = checkPlacement(this.world, r);
+    if (!chk.ok) { this.toast(chk.reason ?? 'Can’t place there', 'bad', 1600); this.onEvent({ type: 'deny' }); return; }
+    if (getItem(r.item).kind === 'bomb') {
+      applyBomb(this.world, [...chk.targets!, ...chk.dependents!]);
+      this.onEvent({ type: 'bomb', cells: chk.cells, by: 'me' });
+    } else {
+      const obj = makeObject(this.world, r, chk, 'me', 1);
+      applyPlacement(this.world, obj);
+      this.onEvent({ type: 'placed', obj, by: 'me' });
+    }
+    void sb;
+    this.refreshCheck(); this.onChange();
+  }
+  /** Building is active: the normal build phase, or placing an item in the sandbox. */
+  isBuilding(): boolean { return this.sandbox ? !!this.sandbox.placing && !this.sandbox.menu : this.phase === 'build' && !this.rehearsal; }
+  /** The local simulation being played right now, if any (rehearsal or sandbox). */
+  localSim(): RaceSim | null { return this.sandbox ? this.sandbox.sim : this.rehearsal?.sim ?? null; }
+
+  private updateSandbox(dtMs: number) {
+    const sb = this.sandbox!;
+    if (sb.placing || sb.menu) return; // play pauses while the menu is open or an item is being placed
+    sb.acc += Math.min(dtMs, 200);
+    while (sb.acc >= STEP) {
+      sb.acc -= STEP;
+      sb.sim.step(new Map([['me', inputBits()]]));
+      for (const e of sb.sim.drainEvents()) this.onEvent(e);
+      const p = sb.sim.players[0];
+      if (p.status !== 'racing' || sb.sim.over) {
+        if (p.status === 'finished') { sb.finishes++; this.toast(`Flag reached in ${(p.finishTick / TICK_HZ).toFixed(2)}s. Respawning`, 'good', 1800); }
+        else { sb.deaths++; this.toast('Respawning…', 'info', 1200); }
+        this.sandboxRespawn();
+      }
+    }
   }
 
   // ------------------------------------------------ rehearsal (local only, never scored)

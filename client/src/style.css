@@ -248,3 +248,9 @@ table.results td.total { color: var(--accent); font-size: 16px; }
 .winner-dance canvas { width: 90px; height: 105px; }
 @media (max-width: 720px) { .emote-toggle { bottom: auto; top: 54px; right: 8px; } .emote-wheel { transform: scale(.8); } }
 .emote-toggle.hidden { display: none; }
+
+/* sandbox item menu */
+.sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.sb-item { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .12); border-radius: 12px; color: #fff; font: 600 12px/1.2 inherit; cursor: pointer; }
+.sb-item:hover, .sb-item:focus-visible { background: rgba(255, 210, 94, .16); border-color: rgba(255, 210, 94, .6); }
+.sb-item canvas { width: 100%; height: auto; }

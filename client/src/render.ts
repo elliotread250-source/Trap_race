@@ -146,9 +146,9 @@ export class Renderer {
     this.drawTerrain(world);
     if (hasScenery(map)) drawAmbient(this.ctx, map, this.view());
     this.drawZones(world, g);
-    const sim = g.rehearsal?.sim ?? g.race;
+    const sim = g.localSim() ?? g.race;
     this.drawObjects(world, sim, g);
-    if (g.phase === 'build' && !g.rehearsal) this.drawBuildOverlay(g, world);
+    if (g.isBuilding()) this.drawBuildOverlay(g, world);
     if (sim) this.drawRace(g, sim);
     if (this.deaths.length) { const now = performance.now() / 1000; this.deaths = this.deaths.filter(f => drawDeathFx(this.ctx, f, now, settings.reducedMotion)); }
     this.drawParticles(dt);
@@ -175,9 +175,9 @@ export class Renderer {
     const w = g.world!;
     const mw = w.w * C, mh = w.h * C;
     const cam = this.cam;
-    const sim = g.rehearsal?.sim ?? g.race;
+    const sim = g.localSim() ?? g.race;
     let tx = mw / 2, ty = mh / 2, tz: number;
-    const overview = (g.phase === 'build' && !g.rehearsal) || g.phase === 'draft' || g.phase === 'lobby' || g.phase === 'results' || g.phase === 'matchEnd';
+    const overview = g.isBuilding() || (!g.sandbox && (g.phase === 'draft' || g.phase === 'lobby' || g.phase === 'results' || g.phase === 'matchEnd'));
     // keep the course clear of the HUD row and the build bar
     const top = overview ? this.insetTop : 0, bottom = overview ? this.insetBottom : 0;
     const fit = Math.min(this.vw / mw, Math.max(80, this.vh - top - bottom) / mh) * 0.96;
@@ -188,7 +188,8 @@ export class Renderer {
     } else {
       tz = Math.max(fit, Math.min(1.6, this.vw / (C * (this.vw < 900 ? 17 : 24)))); // phones see fewer, larger cells
       let body: { x: number; y: number; vx: number } | null = null;
-      if (g.rehearsal) body = g.rehearsal.sim.players[0].body;
+      const local = g.localSim();
+      if (local) body = local.players[0].body;
       else if (g.pred) body = { x: g.pred.x + g.corr.x, y: g.pred.y + g.corr.y, vx: g.pred.vx };
       else if (sim) {
         const id = g.spectateTarget();
@@ -332,7 +333,7 @@ export class Renderer {
     ctx.fillStyle = '#ff5e8a';
     ctx.beginPath(); ctx.moveTo(fx, f.y - 20); ctx.quadraticCurveTo(fx + 25, f.y - 26 + wave, fx + 46, f.y - 14 + wave); ctx.quadraticCurveTo(fx + 25, f.y - 6 + wave, fx, f.y + 4); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.fillText('FINISH', fx, f.y + f.h - 6);
-    if (g.phase === 'build' || g.phase === 'draft') {
+    if (g.isBuilding() || g.phase === 'draft') {
       // protected zones while building
       for (const z of world.protectedPx) {
         ctx.save(); ctx.beginPath(); ctx.rect(z.x, z.y, z.w, z.h); ctx.clip();
@@ -363,7 +364,8 @@ export class Renderer {
     if (sim) for (const p of sim.pickups) if (!p.available) usedPick.add(p.id);
     const coinAtOrigin = new Set<string>();
     if (sim) for (const c of sim.coins) if (c.state === 'origin') coinAtOrigin.add(c.id);
-    const demo = g.phase === 'build' && g.myItem() && getItem(g.myItem()!).kind === 'bomb';
+    const demo = g.isBuilding() && g.myItem() && getItem(g.myItem()!).kind === 'bomb';
+    const building = g.isBuilding() || g.phase === 'draft';
     const targets = new Set([...(g.check?.targets ?? []), ...(g.check?.dependents ?? [])]);
     for (const o of world.objects.values()) {
       const def = getItem(o.item);
@@ -378,7 +380,7 @@ export class Renderer {
         // bomb aiming freezes every moving platform at its GO pose, the pose bombs target
         const frozen = demo;
         const tick = frozen ? 0 : g.renderTick();
-        if (g.phase === 'build' || g.phase === 'draft') this.drawLane(o, targets.has(o.id) ? 'rgba(255,90,60,' : 'rgba(127,240,224,');
+        if (building) this.drawLane(o, targets.has(o.id) ? 'rgba(255,90,60,' : 'rgba(127,240,224,');
         this.drawKinematic(o, tick, col, false);
         if (demo && targets.has(o.id)) {
           ctx.save(); ctx.strokeStyle = '#ff5a2a'; ctx.lineWidth = 4; ctx.fillStyle = 'rgba(255,90,40,.3)';
@@ -391,7 +393,7 @@ export class Renderer {
       if (def.kind === 'moving') {
         const len = sim ? sim.movers.find(m => m.o.id === o.id)?.hz?.pathLen ?? 0 : moverPathLen();
         const r = moverRect(o, phase, len);
-        if (!sim || g.phase === 'build') this.drawMoverPath(o, len);
+        if (!sim || building) this.drawMoverPath(o, len);
         const dx = r.x - o.cells[0][0] * C, dy = r.y - o.cells[0][1] * C;
         const minX = Math.min(...o.cells.map(c => c[0])), minY = Math.min(...o.cells.map(c => c[1]));
         drawItem(ctx, def, o.cells.map(([x, y]) => [x - minX, y - minY]), minX * C + dx + (o.cells[0][0] - minX) * 0, minY * C + dy - (o.cells[0][1] - minY) * 0, o.rot, { owner: col, t });
@@ -422,7 +424,7 @@ export class Renderer {
           for (const p of sim.players) { if (p.status !== 'racing') continue; const b = p.id === g.you && g.pred ? g.pred : p.body; const d = Math.hypot(b.x + BW / 2 - c.x, b.y + BH / 2 - c.y); if (d < best) { best = d; aim = Math.atan2(b.y + BH / 2 - c.y, b.x + BW / 2 - c.x); } }
         }
         drawItem(ctx, def, o.cells, 0, 0, o.rot, { owner: col, t, aim });
-        if (g.phase === 'build' || g.phase === 'draft') { const c = cellCenter(o.x, o.y); ctx.save(); ctx.strokeStyle = 'rgba(123,234,92,.35)'; ctx.setLineDash([5, 7]); ctx.beginPath(); ctx.arc(c.x, c.y, NEWITEMS.turretRange, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+        if (building) { const c = cellCenter(o.x, o.y); ctx.save(); ctx.strokeStyle = 'rgba(123,234,92,.35)'; ctx.setLineDash([5, 7]); ctx.beginPath(); ctx.arc(c.x, c.y, NEWITEMS.turretRange, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
         if (demo && targets.has(o.id)) { ctx.save(); ctx.fillStyle = 'rgba(255,90,40,.38)'; for (const [x, y] of o.cells) ctx.fillRect(x * C, y * C, C, C); ctx.restore(); }
         continue;
       }
@@ -787,7 +789,7 @@ export class Renderer {
     }
     this.drawTracers();
     // projectiles (extrapolated from the last snapshot)
-    const since = g.rehearsal ? 0 : Math.min(0.12, (performance.now() - g.lastSnapAt) / 1000);
+    const since = g.localSim() ? 0 : Math.min(0.12, (performance.now() - g.lastSnapAt) / 1000);
     for (const p of sim.projectiles) {
       const x = p.x + p.vx * since, y = p.y + p.vy * since + (p.kind === 'cannon' ? 0.5 * HAZARD.cannonGravity * since * since : 0);
       const ang = Math.atan2(p.vy, p.vx);
@@ -798,7 +800,7 @@ export class Renderer {
       ctx.restore();
     }
     // paper planes, extrapolated to the tick we draw at
-    const tick = g.rehearsal ? sim.tick : g.renderTick();
+    const tick = g.localSim() ? sim.tick : g.renderTick();
     for (const m of sim.movers) {
       if (!m.plane?.alive) continue;
       const r = sim.moverRectAt(m, tick);
@@ -816,8 +818,8 @@ export class Renderer {
       const skin = m?.skin ?? 0;
       const color = PLAYER_COLORS[(m?.color ?? 0) % PLAYER_COLORS.length];
       let b: { x: number; y: number; vx: number; vy: number; g: boolean; ws: boolean; wd: number; f: number };
-      const isLocal = p.id === g.you && !!g.pred && !g.rehearsal;
-      if (g.rehearsal) { const bb = p.body; b = { x: bb.x, y: bb.y, vx: bb.vx, vy: bb.vy, g: bb.grounded, ws: bb.wallSliding, wd: bb.wallDir, f: bb.facing }; }
+      const isLocal = p.id === g.you && !!g.pred && !g.localSim();
+      if (g.localSim()) { const bb = p.body; b = { x: bb.x, y: bb.y, vx: bb.vx, vy: bb.vy, g: bb.grounded, ws: bb.wallSliding, wd: bb.wallDir, f: bb.facing }; }
       else if (isLocal) { const bb = g.pred!; b = { x: bb.x + g.corr.x, y: bb.y + g.corr.y, vx: bb.vx, vy: bb.vy, g: bb.grounded, ws: bb.wallSliding, wd: bb.wallDir, f: bb.facing }; }
       else {
         const rp = g.remotePos(p.id);

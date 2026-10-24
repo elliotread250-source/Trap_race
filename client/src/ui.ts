@@ -1,6 +1,6 @@
 // DOM interface. Names and other player text are always set with textContent, never parsed as HTML.
 import { EMOTES, fmtPts, GAME_TITLE, HAZARD, MATCH, MOVERS, POWER, SCORING, TIMERS, type Difficulty } from '../../shared/config';
-import { getItem } from '../../shared/items';
+import { getItem, ITEM_LIST } from '../../shared/items';
 import { MAP_LIST } from '../../shared/maps';
 import { World } from '../../shared/world';
 import { drawCardPreview, drawCharacter, PLAYER_COLORS, SKINS } from './art';
@@ -25,7 +25,7 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, 
   return el;
 }
 
-type Screen = 'menu' | 'join' | 'ai' | 'practice' | 'howto' | 'skins' | 'settings' | 'game' | 'connecting';
+type Screen = 'menu' | 'join' | 'ai' | 'practice' | 'sandbox' | 'howto' | 'skins' | 'settings' | 'game' | 'connecting';
 
 const previews = new Set<{ canvas: HTMLCanvasElement; skin: number; color: string; state: 'idle' | 'run' | 'celebrate' | 'wallslide'; emote?: number }>();
 /** Extra build-bar guidance for the items whose rules are spatial rather than visible in their footprint. */
@@ -146,6 +146,7 @@ export class UI {
       case 'join': return this.joinScreen();
       case 'ai': return this.aiScreen();
       case 'practice': return this.practiceScreen();
+      case 'sandbox': return this.sandboxScreen();
       case 'howto': return this.howTo();
       case 'skins': return this.skinsScreen();
       case 'settings': return this.settingsScreen();
@@ -178,6 +179,7 @@ export class UI {
           h('button', { class: 'btn teal', onclick: () => this.go('join') }, 'Join Room by Code'),
           h('button', { class: 'btn pink', onclick: () => this.go('ai') }, 'Play Against AI'),
           h('button', { class: 'btn', onclick: () => this.go('practice') }, 'Solo Practice'),
+          h('button', { class: 'btn teal', onclick: () => this.go('sandbox') }, 'Sandbox'),
           h('button', { class: 'btn', onclick: () => this.go('howto') }, 'How to Play'),
           h('button', { class: 'btn', onclick: () => this.go('skins') }, 'Skins'),
           h('button', { class: 'btn', onclick: () => { this.settingsReturn = 'menu'; this.go('settings'); } }, 'Settings'),
@@ -267,6 +269,52 @@ export class UI {
     ));
   }
 
+  private sandboxMap = 'rooftop';
+  private sandboxScreen(): Child {
+    const rerender = () => { this.sig.delete('screen'); this.render(); };
+    return h('div', { class: 'screen' }, h('div', { class: 'card wide' },
+      h('h2', {}, 'Sandbox'),
+      h('p', {}, `Just you, any map, every item. Press ${keyLabel(settings.binds.sandboxMenu[0])} for the item menu and place anything anywhere (bombs remove things). ${keyLabel(settings.binds.retry[0])} respawns at the start. No scoring, no timers: dying or reaching the flag just respawns you.`),
+      this.mapPicker(this.sandboxMap, id => { this.sandboxMap = id; rerender(); }),
+      h('div', { class: 'row spread', style: 'margin-top:14px' }, h('button', { class: 'btn', onclick: () => this.go('menu') }, 'Back'), h('button', { class: 'btn primary', onclick: () => { unlockAudio(); this.g.startSandbox(this.sandboxMap); this.go('game'); } }, 'Start sandbox')),
+    ));
+  }
+
+  /** The sandbox item menu: every item in the game, grouped like the draft. */
+  private sandboxMenu(): Child {
+    const g = this.g;
+    const groups: [string, string][] = [['construction', 'Construction'], ['hazard', 'Hazards'], ['utility', 'Utility'], ['demolition', 'Demolition (removes things)']];
+    return h('div', { class: 'screen' }, h('div', { class: 'card wide sandbox-menu', style: 'max-height:92vh;overflow-y:auto;max-width:1100px' },
+      h('div', { class: 'row spread' }, h('h2', {}, `Sandbox items · ${ITEM_LIST.length}`),
+        h('div', { class: 'row' }, h('button', { class: 'btn small pink', onclick: () => g.sandboxClear() }, 'Clear everything'), h('button', { class: 'btn small', onclick: () => g.toggleSandboxMenu() }, `Close (${keyLabel(settings.binds.sandboxMenu[0])})`))),
+      ...groups.map(([grp, label]) => h('div', {},
+        h('h3', {}, label),
+        h('div', { class: 'sb-grid' }, ...ITEM_LIST.filter(d => d.group === grp).map(d => {
+          const cv = h('canvas', { width: 160, height: 110 });
+          drawCardPreview(cv, d.id, 0.5);
+          if (d.kind === 'shuttle' || d.kind === 'wheel') moverCards.add({ canvas: cv, item: d.id });
+          return h('button', { class: 'sb-item', title: d.desc, 'data-item': d.id, onclick: () => { sfx.click(); g.sandboxPick(d.id); } }, cv, h('span', {}, d.name));
+        })))),
+      h('p', { class: 'small-note' }, 'Click an item, then click on the course to place it (as many as you like). Right-click or R rotates, F flips. Esc stops placing and puts you back in control.'),
+    ));
+  }
+
+  private sandboxBar(): Child {
+    const g = this.g, sb = g.sandbox!;
+    if (!sb.placing) return h('div', { class: 'buildbar sandbox-hint' }, h('div', { class: 'info' }, h('b', {}, `Sandbox · ${g.world?.map.name ?? ''}`), h('span', {}, `${keyLabel(settings.binds.sandboxMenu[0])} item menu · ${keyLabel(settings.binds.retry[0])} respawn · Esc menu`)),
+      h('button', { class: 'btn small primary', onclick: () => g.toggleSandboxMenu() }, 'Items'), h('button', { class: 'btn small', onclick: () => g.sandboxRespawn() }, 'Respawn'));
+    const def = getItem(sb.placing);
+    const chk = g.check;
+    return h('div', { class: 'buildbar' },
+      h('div', { class: 'info' }, h('b', {}, `Placing ${def.name}` + (def.variants ? ` · ${def.variants[g.variant]}` : '')), h('span', {}, buildTip(def.kind, def.rotationNote))),
+      chk?.ok ? h('span', { class: 'valid ok' }, def.kind === 'bomb' ? `Removes ${(chk.targets?.length ?? 0) + (chk.dependents?.length ?? 0)} item(s)` : 'Valid spot') : h('span', { class: 'valid bad' }, chk?.reason ?? 'Move the cursor onto the course'),
+      def.rotatable && h('button', { class: 'btn small', onclick: () => g.rotate(1) }, 'Rotate'),
+      def.variants && h('button', { class: 'btn small', onclick: () => g.flip() }, 'Flip'),
+      h('button', { class: 'btn small', onclick: () => g.toggleSandboxMenu() }, 'Items'),
+      h('button', { class: 'btn primary', onclick: () => g.sandboxPick(null) }, 'Done (Esc)'),
+    );
+  }
+
   private howTo(): Child {
     const row = (a: string, b: string, c: string) => h('tr', {}, h('td', {}, a), h('td', { class: 'num' }, b), h('td', {}, c));
     return h('div', { class: 'screen' }, h('div', { class: 'card wide', style: 'max-height:92vh;overflow-y:auto' },
@@ -348,6 +396,15 @@ export class UI {
     const me = g.me;
     // lobby overlay
     if (!room) { this.once('game', 'wait', () => h('div', { class: 'screen' }, h('div', { class: 'card' }, h('h2', {}, g.status === 'lost' ? 'Reconnecting…' : 'Joining…'), h('button', { class: 'btn', onclick: () => this.leave() }, 'Back to menu')))); return; }
+    if (g.sandbox) {
+      const sb = g.sandbox;
+      this.once('game', sb.menu ? 'sbmenu' : 'none', () => (sb.menu ? this.sandboxMenu() : null));
+      this.once('overlay', sb.menu ? 'none' : JSON.stringify(['sb', sb.placing, g.check?.ok, g.check?.reason, g.rot, g.variant, g.check?.targets?.length]), () => (sb.menu ? null : this.sandboxBar()));
+      this.touch(!sb.menu && !sb.placing);
+      this.updateHud();
+      this.once('pause', this.paused ? 'paused' : 'none', () => (this.paused ? this.pauseMenu() : null));
+      return;
+    }
     if (phase === 'lobby') {
       const key = JSON.stringify([room, g.status]);
       this.once('game', 'lobby' + key, () => this.lobby());
@@ -630,6 +687,14 @@ export class UI {
     }
     const left = g.timeLeft / 1000;
     const phaseName = { draft: 'Draft', build: 'Build', countdown: 'Get ready', race: 'Race', results: 'Results', matchEnd: 'Match over', lobby: '' }[g.phase];
+    if (g.sandbox) {
+      e.round.textContent = `Sandbox · ${g.world?.map.name ?? ''}`;
+      e.timer.classList.add('hidden');
+      e.score.textContent = `Flags ${g.sandbox.finishes} · Respawns ${g.sandbox.deaths}`;
+      e.standings.classList.add('hidden'); e.banner.classList.add('hidden'); e.count.classList.add('hidden'); e.spect.classList.add('hidden');
+      return;
+    }
+    e.standings.classList.remove('hidden');
     e.round.textContent = `Round ${g.round}${g.roundLimit ? '/' + g.roundLimit : ''} · ${phaseName}${g.target > 0 ? ` · first to ${g.targets[g.you] ?? g.target}` : ''}`;
     const showTimer = g.phase !== 'matchEnd';
     e.timer.textContent = showTimer ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : '';

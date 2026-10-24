@@ -26,7 +26,7 @@ ui.onZoom = () => { renderer.buildZoom = renderer.buildZoom > 1 ? 1 : 2.2; };
 // ------------------------------------------------ sound and effects from game events
 let lastWarn = 0;
 game.onEvent = (e: RaceEvent | { type: string; [k: string]: unknown }) => {
-  const sim = game.rehearsal?.sim ?? game.race;
+  const sim = game.localSim() ?? game.race;
   const colorOf = (id: string) => PLAYER_COLORS[(game.member(id)?.color ?? 0) % PLAYER_COLORS.length];
   switch (e.type) {
     case 'countdown': sfx.count(); break;
@@ -127,6 +127,12 @@ initInput((a, ev) => {
   unlockAudio();
   if (ui.screen !== 'game') return;
   if (a === 'emote') { if (ui.emoteWheel.open && !ui.emoteWheel.viaKey) ui.closeEmoteWheel(true); else ui.openEmoteWheel(true); return; }
+  if (game.sandbox) {
+    // sandbox: M opens the item menu, T respawns, Esc backs out of placing or the menu before pausing
+    if (a === 'sandboxMenu') { game.toggleSandboxMenu(); sfx.click(); return; }
+    if (a === 'retry') { game.sandboxRespawn(); return; }
+    if (a === 'menu' && (game.sandbox.menu || game.sandbox.placing)) { if (game.sandbox.menu) game.toggleSandboxMenu(); else game.sandboxPick(null); return; }
+  }
   if (a === 'menu') {
     if (ui.emoteWheel.open) { ui.closeEmoteWheel(false); return; }
     if (game.rehearsal) { game.stopRehearsal(); return; }
@@ -134,7 +140,7 @@ initInput((a, ev) => {
     return;
   }
   if (ui.paused) return;
-  if (game.phase === 'build' && !game.rehearsal) {
+  if (game.isBuilding()) {
     if (a === 'rotate') { game.rotate(ev.shiftKey ? -1 : 1); sfx.click(); }
     if (a === 'flip') { game.flip(); sfx.click(); }
     if (a === 'confirm') game.confirmPlace();
@@ -144,7 +150,7 @@ initInput((a, ev) => {
     if (d) { game.setCursor(game.cursor.x + d[0], game.cursor.y + d[1]); ui.render(); }
     if (ev.code === 'Space') game.confirmPlace();
   }
-  if (game.phase === 'race' && a === 'spectNext') game.spectateIdx++;
+  if (game.phase === 'race' && a === 'spectNext' && !game.sandbox) game.spectateIdx++;
   if (game.phase === 'race' && a === 'retry' && game.isPractice) ui.onPracticeRetry();
 });
 
@@ -152,7 +158,7 @@ initInput((a, ev) => {
 // Mouse: the preview follows the pointer and a click places. Touch: tap a cell to aim there, or drag anywhere to
 // nudge the preview cell by cell (works when zoomed in and keeps your finger off the preview); the Place button confirms.
 let drag: { id: number; sx: number; sy: number; cx: number; cy: number; moved: boolean } | null = null;
-const building = () => game.phase === 'build' && !game.rehearsal && ui.screen === 'game';
+const building = () => game.isBuilding() && ui.screen === 'game';
 canvas.addEventListener('pointermove', e => {
   if (!building()) return;
   if (e.pointerType === 'mouse') {
@@ -196,7 +202,7 @@ canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', e => { if (drag?.id === e.pointerId) drag = null; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
-  if (game.phase !== 'build') return;
+  if (!game.isBuilding()) return;
   e.preventDefault();
   renderer.buildZoom = Math.max(1, Math.min(3, renderer.buildZoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
 }, { passive: false });
@@ -209,12 +215,12 @@ let last = performance.now();
 function loop(now: number) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  setGameKeysActive(ui.screen === 'game' && (game.phase === 'race' || game.phase === 'build' || game.phase === 'countdown'));
-  if (!ui.paused || !game.isPractice) game.update(dt * 1000);
-  const bar = game.phase === 'build' && !game.rehearsal ? document.querySelector('.buildbar') : null;
+  setGameKeysActive(ui.screen === 'game' && (game.phase === 'race' || game.phase === 'build' || game.phase === 'countdown' || !!game.sandbox));
+  if (!ui.paused || (!game.isPractice && !game.sandbox)) game.update(dt * 1000);
+  const bar = game.isBuilding() ? document.querySelector('.buildbar') : null;
   renderer.insetBottom = bar ? window.innerHeight - bar.getBoundingClientRect().top + 6 : 0;
   const hudTop = document.querySelector('.hud-top');
-  renderer.insetTop = hudTop && game.phase === 'build' ? hudTop.getBoundingClientRect().bottom + 4 : 0;
+  renderer.insetTop = hudTop && game.isBuilding() ? hudTop.getBoundingClientRect().bottom + 4 : 0;
   // a wheel opened by holding the emote key plays its selection when the key is let go
   if (ui.emoteWheel.open && ui.emoteWheel.viaKey && !isDown('emote')) ui.closeEmoteWheel(true);
   renderer.frame(game, dt);
