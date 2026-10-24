@@ -27,8 +27,12 @@ export class GameClient {
   room: RoomInfo | null = null;
   phase: Phase = 'lobby';
   round = 0;
-  /** score to win, whole points */
+  /** score to win, whole points (0 = off) */
   target = 10;
+  /** round limit (0 = off) */
+  roundLimit = 0;
+  /** each player's points to win (individual handicaps applied) */
+  targets: Record<string, number> = {};
   draftStage: DraftStage = 'humans';
   endsAt = 0;
   competitive = false;
@@ -52,7 +56,7 @@ export class GameClient {
   get corr() { return this.pr?.corr ?? { x: 0, y: 0 }; }
   get seq() { return this.pr?.seq ?? 0; }
   results: { rows: RoundRow[]; competitive: boolean } | null = null;
-  matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number } | null = null;
+  matchEnd: { order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; roundLimit: number; targets: Record<string, number>; reason: 'target' | 'rounds'; rows: RoundRow[]; round: number } | null = null;
   votes: string[] = [];
   /** emotes playing right now: player id -> emote index and when it started (performance.now) */
   emotes = new Map<string, { e: number; at: number }>();
@@ -148,6 +152,14 @@ export class GameClient {
   get me() { return this.room?.members.find(m => m.id === this.you); }
   get isHost() { return !!this.me?.host; }
   member(id: string) { return this.room?.members.find(m => m.id === id); }
+  /** Short text for the match goal: "first to 10", "round 3/12", or both. */
+  goalText(): string {
+    const parts: string[] = [];
+    const mine = this.targets[this.you] ?? this.target;
+    if (this.target > 0) parts.push(`first to ${mine}`);
+    if (this.roundLimit > 0) parts.push(`round limit ${this.roundLimit}`);
+    return parts.join(' · ');
+  }
   get timeLeft() { return Math.max(0, this.endsAt - performance.now()); }
   get myCard() { return this.cards.find(c => c.by === this.you) ?? null; }
   get inRoster() { return !!this.race?.players.some(p => p.id === this.you) || (this.phase !== 'lobby' && !this.me?.spectator); }
@@ -179,7 +191,7 @@ export class GameClient {
         this.toast(m.msg, 'bad');
         break;
       case 'phase':
-        this.phase = m.phase; this.round = m.round; this.target = m.target; this.competitive = m.competitive; this.tally = m.tally;
+        this.phase = m.phase; this.round = m.round; this.target = m.target; this.roundLimit = m.roundLimit ?? 0; this.targets = m.targets ?? {}; this.competitive = m.competitive; this.tally = m.tally;
         this.endsAt = performance.now() + m.endsIn;
         if (m.phase === 'lobby') this.toLobbyState();
         if (m.phase === 'draft') { this.placedThisRound = false; this.results = null; this.matchEnd = null; this.awaitingPlace = false; this.race = null; this.pr = null; }
@@ -227,7 +239,7 @@ export class GameClient {
         break;
       case 'snap': this.onSnap(m.s, m.ev); break;
       case 'results': this.results = { rows: m.rows, competitive: m.competitive }; this.onEvent({ type: 'results' }); break;
-      case 'matchEnd': this.matchEnd = { order: m.order, winners: m.winners, tally: m.tally, votes: m.votes, target: m.target, rows: m.rows, round: m.round }; this.votes = m.votes; if (m.winners.includes(this.you)) this.onEvent({ type: 'results' }); break;
+      case 'matchEnd': this.matchEnd = { order: m.order, winners: m.winners, tally: m.tally, votes: m.votes, target: m.target, roundLimit: m.roundLimit, targets: m.targets, reason: m.reason, rows: m.rows, round: m.round }; this.votes = m.votes; if (m.winners.includes(this.you)) this.onEvent({ type: 'results' }); break;
       case 'votes': this.votes = m.votes; break;
       case 'pong': break;
       case 'emote': this.emotes.set(m.pid, { e: m.e, at: m.pid === this.you && this.emotes.get(m.pid)?.e === m.e ? this.emotes.get(m.pid)!.at : performance.now() }); this.onEvent({ type: 'emote', pid: m.pid, e: m.e }); break;

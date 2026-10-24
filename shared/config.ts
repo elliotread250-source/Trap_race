@@ -1,7 +1,7 @@
 // Every tuning value in one place. Sizes for building are in grid cells; physics is in pixels.
 
 export const GAME_TITLE = 'Trap Race';
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 /** Version of the item catalogue and stored world data. Older snapshots are migrated (see migrateSnapshot in world.ts). */
 export const CONTENT_VERSION = 3;
 
@@ -65,6 +65,10 @@ export const MATCH = {
   defaultTarget: 10,
   minTarget: 5,
   maxTarget: 15,
+  /** optional round limit (0 = off). Points to win and the round limit can each be off, never both. */
+  defaultRounds: 10,
+  minRounds: 3,
+  maxRounds: 30,
   minPlayers: 2,
   maxPlayers: 6,
   maxPlacedObjects: 120, // score-target matches have no round limit; the cap only stops runaway growth and never deletes to make room
@@ -84,7 +88,10 @@ export const SCORING = {
   soleFinisher: 6,
   trapElim: 2,
   trapCapElimsPerRound: 3, // credited eliminations per round (was 3 points at 1 point each; still 3 eliminations)
-  coin: 10,
+  coin: 10, // 1 point per banked coin
+  /** extra point for reaching the flag after missing it for comebackAfter or more rounds in a row */
+  comeback: 10,
+  comebackAfter: 4,
   attributionWindowS: 3,
 };
 

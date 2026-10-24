@@ -74,6 +74,7 @@ export class UI {
   private menuErr = '';
   private aiOpts = { bots: 3, difficulty: 'medium' as Difficulty, map: 'rooftop' };
   private practiceMap = 'rooftop';
+  private handicaps = false;
   private settingsReturn: Screen = 'menu';
   private touchEl: HTMLElement | null = null;
   onPracticeRetry: () => void = () => {};
@@ -280,14 +281,15 @@ export class UI {
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' },
         h('tr', {}, h('th', {}, 'Event'), h('th', {}, 'Points'), h('th', {}, 'When')),
         row('Finish', `+${fmtPts(SCORING.finish)}`, 'Reach the flag alive'),
-        row('First finisher', `+${fmtPts(SCORING.firstFinisher)}`, 'Earliest finish tick (ties all get it). Not in solo practice.'),
-        row('Sole finisher', `+${fmtPts(SCORING.soleFinisher)}`, 'You are the only finisher in a round with 2+ competitors. Awarded once nobody else can still finish.'),
+        row('First finisher', `+${fmtPts(SCORING.firstFinisher)}`, 'Earliest finish tick (ties all get it). Not paid to a sole finisher, who gets the sole bonus instead. Not in solo practice.'),
+        row('Sole finisher', `+${fmtPts(SCORING.soleFinisher)}`, 'You are the only finisher in a round with 2+ competitors. Replaces the first-finisher bonus (they never stack). Awarded once nobody else can still finish.'),
         row('Trap elimination', `+${fmtPts(SCORING.trapElim)}`, `Someone else dies to a trap you placed, crushes included. Counts ${SCORING.trapCapElimsPerRound} eliminations per round at most. Never for yourself.`),
         row('Banked coin', `+${fmtPts(SCORING.coin)}`, 'Carry a coin to the flag. Picking it up is worth nothing until you finish.'),
+        row('Comeback', `+${fmtPts(SCORING.comeback)}`, `Reach the flag after missing it ${SCORING.comebackAfter} or more rounds in a row. Your streak resets when you finish.`),
       )),
       h('p', {}, 'Coins drop where their carrier dies, and anyone can pick them up. A coin nobody banks returns to where it was placed next round. A coin that reaches the flag is spent and gone for the rest of the match.'),
       h('h3', {}, 'Winning'),
-      h('p', {}, `The first player to reach the score to win takes the match immediately, even mid-race. Players who reach it on the same tick share the victory. If nobody has reached it, the next round starts; there is no round limit.`),
+      h('p', {}, `The first player to reach the score to win takes the match immediately, even mid-race. Players who reach it on the same tick share the victory. The host can also set a round limit (either can be off, never both): when it is reached, the most points wins, then most finishes, then the lowest total time, else a shared victory. With individual win requirements each player has their own points to win, and at the round limit players are ranked by how much of their own requirement they earned.`),
       h('h3', {}, 'Traps worth knowing'),
       h('p', {}, `Tripod snipers sit on blocks and fire every ${HAZARD.sniperInterval}s exactly; the shot lands instantly and pierces players. The crossbow fires every ${HAZARD.crossbowInterval}s, slow arrows that break on the first player. Cannonballs arc. Black holes pull players and projectiles in; come at one with sideways speed and you can swing around it, aim straight at it and the core kills. Crumbling platforms break on their second hit (a landing, a wall-slide or a shot) and stay gone for the round. Barbed wire is deadly even while wall sliding. Shields absorb one trap hit (${POWER.shieldDur}s), never a fall.`),
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn primary', onclick: () => this.go(this.g.transport ? 'game' : 'menu') }, 'Got it')),
@@ -372,9 +374,16 @@ export class UI {
     const invite = `${location.origin}${location.pathname}?room=${room.code}`;
     const competitors = room.members.filter(m => !m.spectator);
     const copy = (text: string, label: string) => { void navigator.clipboard?.writeText(text).then(() => g.toast(`${label} copied`, 'good'), () => g.toast('Copy failed: select and copy it manually', 'bad')); };
+    const handicaps = room.target > 0 && (this.handicaps || room.members.some(m => m.target !== undefined));
     const players = h('div', { class: 'players' }, ...room.members.map(m => {
       const col = PLAYER_COLORS[m.color % PLAYER_COLORS.length];
       const row = h('div', { class: 'player-row', style: `--c:${col}` }, skinCanvas(m.skin, col, 40, 48), h('div', { class: 'name' }, m.name + (m.id === g.you ? ' (you)' : '')));
+      if (handicaps && !m.spectator) {
+        if (host) row.append(h('select', { class: 'input', style: 'min-height:32px;padding:2px 6px;font-size:13px', 'aria-label': `Points to win for ${m.name}`, title: 'Points this player needs to win', onchange: (e: Event) => g.send({ t: 'host', a: 'memberTarget', id: m.id, target: Number((e.target as HTMLSelectElement).value) }) },
+          h('option', { value: 0, selected: m.target === undefined }, `Needs ${room.target} (default)`),
+          ...Array.from({ length: MATCH.maxTarget - MATCH.minTarget + 1 }, (_, i) => MATCH.minTarget + i).map(n => h('option', { value: n, selected: n === m.target }, `Needs ${n}`))));
+        else row.append(h('span', { class: 'pill' }, `Needs ${m.target ?? room.target}`));
+      }
       if (m.host) row.append(h('span', { class: 'pill host' }, 'Host'));
       if (m.bot) {
         if (host) row.append(h('select', { class: 'input', style: 'min-height:32px;padding:2px 6px;font-size:13px', 'aria-label': 'Bot difficulty', onchange: (e: Event) => g.send({ t: 'host', a: 'botDiff', id: m.id, difficulty: (e.target as HTMLSelectElement).value as Difficulty }) }, ...(['easy', 'medium', 'hard'] as Difficulty[]).map(d => h('option', { value: d, selected: d === m.difficulty }, d))));
@@ -399,11 +408,20 @@ export class UI {
         h('button', { class: 'btn small teal', onclick: () => copy(invite, 'Invite link') }, 'Copy invite link'),
       ),
       players,
+      room.target > 0 && h('label', { class: 'row small-note', style: 'gap:8px;cursor:pointer' },
+        h('input', { type: 'checkbox', checked: handicaps, disabled: !host, onchange: (e: Event) => { this.handicaps = (e.target as HTMLInputElement).checked; if (!this.handicaps) for (const m of room.members) if (m.target) g.send({ t: 'host', a: 'memberTarget', id: m.id, target: 0 }); this.sig.delete('game'); this.render(); } }),
+        'Individual win requirements (handicaps): give each player or bot their own points to win'),
       canAdd && h('div', { class: 'row' }, h('span', { class: 'small-note' }, 'Add bot:'), ...(['easy', 'medium', 'hard'] as Difficulty[]).map(d => h('button', { class: 'btn small', onclick: () => g.send({ t: 'host', a: 'addBot', difficulty: d }) }, `+ ${d}`))),
       h('h3', {}, host ? 'Choose a map' : `Map: ${MAP_LIST.find(m => m.id === room.mapId)?.name}`),
       this.mapPicker(room.mapId, id => g.send({ t: 'host', a: 'map', mapId: id }), !host),
       h('div', { class: 'row', style: 'margin-top:12px' },
-        h('label', { class: 'field' }, 'Score to win', h('select', { class: 'input', disabled: !host, 'aria-label': 'Score to win', onchange: (e: Event) => g.send({ t: 'host', a: 'target', target: Number((e.target as HTMLSelectElement).value) }) }, ...Array.from({ length: MATCH.maxTarget - MATCH.minTarget + 1 }, (_, i) => MATCH.minTarget + i).map(n => h('option', { value: n, selected: n === room.target }, String(n))))),
+        h('label', { class: 'field' }, 'Points to win', h('select', { class: 'input', disabled: !host, 'aria-label': 'Points to win', onchange: (e: Event) => g.send({ t: 'host', a: 'target', target: Number((e.target as HTMLSelectElement).value) }) },
+          // "Off" is only offered while the round limit is on: one of the two must always stay active
+          h('option', { value: 0, selected: room.target === 0, disabled: room.roundLimit === 0 }, room.roundLimit === 0 ? 'Off (turn on a round limit first)' : 'Off'),
+          ...Array.from({ length: MATCH.maxTarget - MATCH.minTarget + 1 }, (_, i) => MATCH.minTarget + i).map(n => h('option', { value: n, selected: n === room.target }, String(n))))),
+        h('label', { class: 'field' }, 'Round limit', h('select', { class: 'input', disabled: !host, 'aria-label': 'Round limit', onchange: (e: Event) => g.send({ t: 'host', a: 'rounds', rounds: Number((e.target as HTMLSelectElement).value) }) },
+          h('option', { value: 0, selected: room.roundLimit === 0, disabled: room.target === 0 }, room.target === 0 ? 'Off (turn on points to win first)' : 'Off'),
+          ...Array.from({ length: MATCH.maxRounds - MATCH.minRounds + 1 }, (_, i) => MATCH.minRounds + i).map(n => h('option', { value: n, selected: n === room.roundLimit }, `${n} rounds`)))),
         h('div', { class: 'grow' }),
         h('button', { class: 'btn', onclick: () => this.leave() }, 'Leave'),
         !host && h('button', { class: `btn ${g.me?.ready ? '' : 'primary'}`, onclick: () => g.send({ t: 'ready', ready: !g.me?.ready }) }, g.me?.ready ? 'Not ready' : 'Ready up'),
@@ -434,7 +452,7 @@ export class UI {
       return btn;
     });
     return h('div', { class: 'draft' },
-      h('h2', {}, `Round ${g.round} · Draft · first to ${g.target}`),
+      h('h2', {}, `Round ${g.round}${g.roundLimit ? '/' + g.roundLimit : ''} · Draft · ${g.goalText()}`),
       g.cards.length > 0 && g.room?.members.some(m => m.bot && !m.spectator) && h('div', { class: `stage ${g.draftStage}`, 'data-stage': g.draftStage }, g.draftStage === 'humans' ? 'Players choosing' : 'AI choosing'),
       h('div', { class: 'sub' }, spectator ? 'Spectating this match.' : mine ? `You picked ${getItem(mine.item).name}. ${g.draftStage === 'humans' ? 'Waiting for the other players…' : 'The AI is choosing from what is left…'}` : 'Pick one item. Each card can be claimed by exactly one player.', g.demolition ? ' A bomb is guaranteed this round: the course looked blocked.' : '', g.courseOpen ? '' : ' No full route to the flag yet: everyone gets a building card to choose. Build the crossing!'),
       h('div', { class: 'cards' }, ...cards),
@@ -481,18 +499,19 @@ export class UI {
         h('td', { class: 'num' }, solo ? '–' : fmtPts(row.sole)),
         h('td', { class: 'num' }, solo ? '–' : fmtPts(row.trap)),
         h('td', { class: 'num' }, fmtPts(row.coins)),
+        h('td', { class: 'num' }, solo ? '–' : fmtPts(row.comeback ?? 0)),
         h('td', { class: 'num total' }, `+${fmtPts(row.total)}`),
         h('td', { class: 'num total' }, fmtPts(row.matchTotal)),
       );
       return tr;
     });
     return h('div', { class: 'screen' }, h('div', { class: 'card wide' },
-      h('h2', {}, `Round ${g.round} results · first to ${g.target}`),
+      h('h2', {}, `Round ${g.round}${g.roundLimit ? '/' + g.roundLimit : ''} results · ${g.goalText()}`),
       solo && h('p', {}, 'Solo practice: first, sole-finisher and trap bonuses are disabled.'),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' },
-        h('tr', {}, ...['Player', 'Result', 'Finish', 'First', 'Sole', 'Traps', 'Coins', 'Round', 'Match'].map(t => h('th', {}, t))),
+        h('tr', {}, ...['Player', 'Result', 'Finish', 'First', 'Sole', 'Traps', 'Coins', 'Comeback', 'Round', 'Match'].map(t => h('th', {}, t))),
         ...body)),
-      h('p', { class: 'small-note', 'data-next': '1' }, `Next round soon. Built items stay on the course. First to ${g.target} wins.`),
+      h('p', { class: 'small-note', 'data-next': '1' }, g.roundLimit > 0 && g.round >= g.roundLimit ? 'That was the final round: the winner is up next.' : `Next round soon. Built items stay on the course.${g.target > 0 ? ` First to ${g.targets[g.you] ?? g.target} wins.` : ''}${g.roundLimit > 0 ? ` Most points after round ${g.roundLimit} wins.` : ''}`),
     ));
   }
 
@@ -508,10 +527,10 @@ export class UI {
     const host = g.isHost;
     const voted = g.votes.includes(g.you);
     return h('div', { class: 'screen' }, h('div', { class: 'card wide' },
-      h('h2', {}, `Match over · first to ${me.target}`),
+      h('h2', {}, me.reason === 'rounds' ? `Match over · ${me.roundLimit} rounds played` : `Match over · first to ${me.target}`),
       h('div', { class: 'winner-dance' }, ...me.winners.map((id, i) => { const m = g.member(id); return skinCanvas(m?.skin ?? 0, PLAYER_COLORS[(m?.color ?? 0) % PLAYER_COLORS.length], 90, 105, 'celebrate', [1, 9, 3, 7][i % 4]); })),
       h('div', { class: 'winner' }, names.length > 1 ? `Shared victory: ${names.join(' & ')}` : `${names[0] ?? 'Nobody'} wins!`,
-        h('span', { class: 'small-note' }, ` ${fmtPts(me.tally[me.winners[0]]?.score ?? 0)} points after round ${me.round} (target ${me.target})`)),
+        h('span', { class: 'small-note' }, me.reason === 'rounds' ? ` ${fmtPts(me.tally[me.winners[0]]?.score ?? 0)} points after the round limit (${me.roundLimit})` : ` ${fmtPts(me.tally[me.winners[0]]?.score ?? 0)} points after round ${me.round} (target ${me.targets[me.winners[0]] ?? me.target})`)),
       h('div', { class: 'results-wrap' }, h('table', { class: 'results' }, h('tr', {}, ...['#', 'Player', 'Score', 'Finishes', 'Total time'].map(t => h('th', {}, t))), ...rows)),
       host && h('h3', {}, 'Next map'),
       host && this.mapPicker(room.mapId, id => g.send({ t: 'host', a: 'map', mapId: id })),
@@ -606,7 +625,7 @@ export class UI {
     }
     const left = g.timeLeft / 1000;
     const phaseName = { draft: 'Draft', build: 'Build', countdown: 'Get ready', race: 'Race', results: 'Results', matchEnd: 'Match over', lobby: '' }[g.phase];
-    e.round.textContent = `Round ${g.round} · ${phaseName} · first to ${g.target}`;
+    e.round.textContent = `Round ${g.round}${g.roundLimit ? '/' + g.roundLimit : ''} · ${phaseName}${g.target > 0 ? ` · first to ${g.targets[g.you] ?? g.target}` : ''}`;
     const showTimer = g.phase !== 'matchEnd';
     e.timer.textContent = showTimer ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : '';
     e.timer.classList.toggle('low', left < 10 && g.phase !== 'results');

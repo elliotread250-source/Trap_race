@@ -545,7 +545,7 @@ describe('score to win', () => {
     room.addBot('easy'); room.startMatch();
     room.handle(h.id, { t: 'host', a: 'target', target: 6 }); // locked during the match
     expect(room.target).toBe(MATCH.maxTarget);
-    expect(room.match!.targetTenths).toBe(150);
+    expect(room.match!.target * SCORING.unit).toBe(150);
   });
 
   const toRace = (room: Room) => { let g = 0; while (room.phase !== 'race' && g++ < TICK_HZ * 120) room.tick(); room.tick(); };

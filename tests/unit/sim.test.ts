@@ -226,7 +226,7 @@ describe('scoring', () => {
     expect(r.find(x => x.pid === 'alex')!.total).toBe(14); // finish 1 + first 0.4
     expect(r.find(x => x.pid === 'bailey')!.total).toBe(10);
     const s = scoreRound(['alex', 'bailey'], true, ev([['finish', 'alex', 100]]), st({ alex: 'finished', bailey: 'dead' }), new Map());
-    expect(s.find(x => x.pid === 'alex')!.total).toBe(10 + 4 + 6); // finish + first + sole = 2
+    expect(s.find(x => x.pid === 'alex')!.total).toBe(10 + 6); // finish + sole; sole and first no longer stack (batch update)
   });
   it('does not grant the sole-finisher bonus while somebody else can still finish', () => {
     const early = scoreRound(['a', 'b'], true, ev([['finish', 'a', 100]]), st({ a: 'finished', b: 'racing' }), new Map(), false);

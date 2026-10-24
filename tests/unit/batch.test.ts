@@ -191,3 +191,100 @@ describe('phase 2: changes to existing items', () => {
     expect(sim.player('a')!.status).toBe('racing');
   });
 });
+
+// ================================================================ Phase 3
+import { MATCH, SCORING } from '../../shared/config';
+import { rankMatch, scoreRound, type PlayerTally } from '../../shared/scoring';
+
+const fin = (pid: string, tick: number): RaceEvent => ({ id: `f:${pid}`, t: tick, type: 'finish', pid, tick });
+const st = (m: Record<string, string>) => new Map(Object.entries(m)) as Map<string, 'finished' | 'dead'>;
+
+describe('phase 3: scoring, rules and game settings', () => {
+  it('a coin is worth exactly 1 point', () => { expect(SCORING.coin).toBe(SCORING.unit); });
+
+  it('a sole finisher gets the sole bonus but not the first-finisher bonus; two finishers: first only', () => {
+    const one = scoreRound(['a', 'b'], true, [fin('a', 100)], st({ a: 'finished', b: 'dead' }), new Map());
+    expect(one[0]).toMatchObject({ base: 10, first: 0, sole: SCORING.soleFinisher, total: 10 + SCORING.soleFinisher });
+    const two = scoreRound(['a', 'b'], true, [fin('a', 100), fin('b', 200)], st({ a: 'finished', b: 'finished' }), new Map());
+    expect(two[0]).toMatchObject({ first: SCORING.firstFinisher, sole: 0 });
+    expect(two[1]).toMatchObject({ first: 0, sole: 0 });
+  });
+
+  it('pays the comeback point only to finishers on a 4+ round miss streak', () => {
+    const rows = scoreRound(['a', 'b', 'c'], true, [fin('a', 100), fin('b', 120)], st({ a: 'finished', b: 'finished', c: 'dead' }), new Map(), true, new Set(['a', 'c']));
+    expect(rows.find(r => r.pid === 'a')!.comeback).toBe(SCORING.comeback);
+    expect(rows.find(r => r.pid === 'b')!.comeback).toBe(0);
+    expect(rows.find(r => r.pid === 'c')!.comeback).toBe(0); // eligible but did not finish
+  });
+
+  it('tracks the miss streak per player and resets it on a finish', () => {
+    const room = new Room('CMB', 'online', () => {}, 3);
+    const h = room.addHuman('H', 0) as { id: string };
+    room.addBot('easy');
+    room.startMatch();
+    const m = room.match!;
+    const bank = (m as unknown as { bankRound(r: unknown[]): void }).bankRound.bind(m);
+    const row = (pid: string, finished: boolean) => ({ pid, status: finished ? 'finished' : 'dead', time: finished ? 10 : null, base: 0, first: 0, sole: 0, trap: 0, coins: 0, comeback: 0, total: 0, matchTotal: 0 });
+    for (let i = 0; i < 4; i++) bank([row(h.id, false)]);
+    expect(m.missStreak.get(h.id)).toBe(4);
+    bank([row(h.id, true)]);
+    expect(m.missStreak.get(h.id)).toBe(0);
+  });
+
+  it('round limit and points to win can each be off but never both; ranges are validated', () => {
+    const errs: string[] = [];
+    const room = new Room('RL', 'online', (_i, msg) => { if (msg.t === 'error') errs.push(msg.msg); }, 1);
+    const h = room.addHuman('H', 0) as { id: string };
+    room.handle(h.id, { t: 'host', a: 'target', target: 0 }); // round limit is off: refused
+    expect(room.target).toBe(MATCH.defaultTarget);
+    room.handle(h.id, { t: 'host', a: 'rounds', rounds: 8 });
+    expect(room.roundLimit).toBe(8);
+    room.handle(h.id, { t: 'host', a: 'target', target: 0 });
+    expect(room.target).toBe(0);
+    room.handle(h.id, { t: 'host', a: 'rounds', rounds: 0 }); // would leave both off
+    expect(room.roundLimit).toBe(8);
+    room.handle(h.id, { t: 'host', a: 'rounds', rounds: 2 });
+    expect(room.roundLimit).toBe(8);
+    expect(errs.length).toBe(3);
+  });
+
+  it('ends after the round limit with the most points winning; ties break on finishes, then shared', () => {
+    const tally = new Map<string, PlayerTally>([['a', { score: 30, finishes: 3, finishTime: 40 }], ['b', { score: 30, finishes: 2, finishTime: 20 }], ['c', { score: 10, finishes: 1, finishTime: 9 }]]);
+    expect(rankMatch(['a', 'b', 'c'], tally).winners).toEqual(['a']);
+    tally.set('b', { score: 30, finishes: 3, finishTime: 40 });
+    expect(rankMatch(['a', 'b', 'c'], tally).winners.sort()).toEqual(['a', 'b']);
+    // a real match with a 3-round limit and no points target finishes on its own
+    const prev = { ...TIMERS };
+    try {
+      Object.assign(TIMERS, { draftMs: 300, buildMs: 300, raceMs: 1500, resultsMs: 300, countdownMs: 100 });
+      const msgs: ServerMsg[] = [];
+      const room = new Room('RL2', 'online', (_i, m) => msgs.push(m), 5);
+      const h = room.addHuman('H', 0) as { id: string };
+      room.addBot('easy');
+      room.handle(h.id, { t: 'host', a: 'rounds', rounds: 3 });
+      room.handle(h.id, { t: 'host', a: 'target', target: 0 });
+      room.startMatch();
+      for (let i = 0; i < 60 * 120 && room.phase !== 'matchEnd'; i++) room.tick();
+      expect(room.phase).toBe('matchEnd');
+      expect(room.match!.round).toBe(3);
+      const end = msgs.find(m => m.t === 'matchEnd') as Extract<ServerMsg, { t: 'matchEnd' }>;
+      expect(end.reason).toBe('rounds');
+      expect(end.winners.length).toBeGreaterThan(0);
+    } finally { Object.assign(TIMERS, prev); }
+  });
+
+  it('individual win requirements: each player (bots included) wins at their own target', () => {
+    const room = new Room('HC', 'online', () => {}, 2);
+    const h = room.addHuman('H', 0) as { id: string };
+    const b = room.addBot('hard') as { id: string };
+    room.handle(h.id, { t: 'host', a: 'memberTarget', id: b.id, target: 15 });
+    room.handle(h.id, { t: 'host', a: 'memberTarget', id: h.id, target: 5 });
+    expect(room.member(b.id)!.target).toBe(15);
+    room.startMatch();
+    expect(room.match!.targets.get(b.id)).toBe(15);
+    expect(room.match!.targets.get(h.id)).toBe(5);
+    // ranking by share of their own requirement: 5/5 beats 10/15
+    const tally = new Map<string, PlayerTally>([[h.id, { score: 50, finishes: 5, finishTime: 50 }], [b.id, { score: 100, finishes: 9, finishTime: 50 }]]);
+    expect(rankMatch([h.id, b.id], tally, new Map([[h.id, 50], [b.id, 150]])).winners).toEqual([h.id]);
+  });
+});

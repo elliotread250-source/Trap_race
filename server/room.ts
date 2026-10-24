@@ -33,6 +33,8 @@ const BOT_NAMES = ['Bolt', 'Pip', 'Juno', 'Rex', 'Mika', 'Ozzy', 'Tess', 'Kiko',
 export interface Member {
   id: string; name: string; skin: number; color: number; bot: boolean; difficulty?: Difficulty;
   ready: boolean; connected: boolean; token: string; spectator: boolean; leftAt: number;
+  /** individual points-to-win requirement (handicap) in whole points; undefined = the room's score to win */
+  target?: number;
 }
 
 interface InputState { queue: number[]; last: number; lastSeq: number }
@@ -47,6 +49,8 @@ export class Room {
   mapId = 'rooftop';
   /** score to win, whole points; locked while a match runs */
   target = MATCH.defaultTarget;
+  /** round limit (0 = off); points to win and the round limit can each be off, never both */
+  roundLimit = 0;
   match: Match | null = null;
   phase: Phase = 'lobby';
   timeMs = 0; // room clock: advances only when the host loop ticks (practice pause stops it)
@@ -139,11 +143,11 @@ export class Room {
 
   info(forId: string): RoomInfo {
     return {
-      code: this.code, mode: this.mode, mapId: this.mapId, target: this.target, phase: this.phase, round: this.match?.round ?? 0, youId: forId,
+      code: this.code, mode: this.mode, mapId: this.mapId, target: this.target, roundLimit: this.roundLimit, phase: this.phase, round: this.match?.round ?? 0, youId: forId,
       inviteable: this.mode === 'online',
       members: this.members.map<MemberInfo>(m => ({
         id: m.id, name: m.name, skin: m.skin, color: m.color, bot: m.bot, difficulty: m.difficulty, ready: m.ready,
-        connected: m.connected, host: m.id === this.hostId, spectator: m.spectator,
+        connected: m.connected, host: m.id === this.hostId, spectator: m.spectator, target: m.target,
       })),
     };
   }
@@ -193,9 +197,25 @@ export class Room {
     switch (msg.a) {
       case 'map': if (this.phase === 'lobby' || this.phase === 'matchEnd') { if (selectableMap(msg.mapId)) { this.mapId = msg.mapId; this.broadcastRoom(); } } break;
       case 'target': {
-        if (!Number.isInteger(msg.target) || msg.target < MATCH.minTarget || msg.target > MATCH.maxTarget) { err(`Score to win must be a whole number from ${MATCH.minTarget} to ${MATCH.maxTarget}`); break; }
+        if (!Number.isInteger(msg.target) || (msg.target !== 0 && (msg.target < MATCH.minTarget || msg.target > MATCH.maxTarget))) { err(`Score to win must be a whole number from ${MATCH.minTarget} to ${MATCH.maxTarget}, or off`); break; }
         if (this.phase !== 'lobby' && this.phase !== 'matchEnd') { err('The score to win is locked while a match is running'); break; }
+        if (msg.target === 0 && this.roundLimit === 0) { err('Points to win and the round limit can’t both be off'); break; }
         this.target = msg.target; this.broadcastRoom();
+        break;
+      }
+      case 'rounds': {
+        if (!Number.isInteger(msg.rounds) || (msg.rounds !== 0 && (msg.rounds < MATCH.minRounds || msg.rounds > MATCH.maxRounds))) { err(`The round limit must be a whole number from ${MATCH.minRounds} to ${MATCH.maxRounds}, or off`); break; }
+        if (this.phase !== 'lobby' && this.phase !== 'matchEnd') { err('The round limit is locked while a match is running'); break; }
+        if (msg.rounds === 0 && this.target === 0) { err('Points to win and the round limit can’t both be off'); break; }
+        this.roundLimit = msg.rounds; this.broadcastRoom();
+        break;
+      }
+      case 'memberTarget': {
+        const mm = this.member(msg.id);
+        if (!mm) break;
+        if (!Number.isInteger(msg.target) || (msg.target !== 0 && (msg.target < MATCH.minTarget || msg.target > MATCH.maxTarget))) { err(`Individual targets must be ${MATCH.minTarget} to ${MATCH.maxTarget} points`); break; }
+        if (this.phase !== 'lobby' && this.phase !== 'matchEnd') { err('Win requirements are locked while a match is running'); break; }
+        mm.target = msg.target === 0 ? undefined : msg.target; this.broadcastRoom();
         break;
       }
       case 'addBot': { const r = this.addBot(msg.difficulty); if ('error' in r) err(r.error); else this.broadcastRoom(); break; }
@@ -227,7 +247,9 @@ export class Room {
     this.votes.clear();
     this.match?.dispose();
     this.seed = (this.seed * 1664525 + 1013904223) >>> 0;
-    this.match = new Match(this, roster, this.mapId, this.target, this.seed);
+    const targets = new Map<string, number>();
+    if (this.target > 0) for (const id of roster) targets.set(id, this.member(id)?.target ?? this.target);
+    this.match = new Match(this, roster, this.mapId, this.target, this.seed, this.roundLimit, targets);
     this.broadcastRoom();
     this.match.begin();
   }
@@ -240,7 +262,7 @@ export class Room {
     for (const m of this.members) { m.spectator = false; if (!m.bot) m.ready = false; }
     this.members = this.members.filter(m => m.bot || m.connected);
     this.broadcastRoom();
-    this.broadcast({ t: 'phase', phase: 'lobby', round: 0, target: this.target, endsIn: 0, mapId: this.mapId, competitive: false, tally: {} });
+    this.broadcast({ t: 'phase', phase: 'lobby', round: 0, target: this.target, roundLimit: this.roundLimit, targets: {}, endsIn: 0, mapId: this.mapId, competitive: false, tally: {} });
   }
 
   private maybeRematchByVote() {
@@ -279,8 +301,14 @@ export class Match {
   readonly room: Room;
   readonly roster: string[];
   /** score to win in whole points, and the same in tenths (scores are integer tenths) */
+  /** score to win in whole points (0 = off) */
   readonly target: number;
-  readonly targetTenths: number;
+  /** round limit (0 = off) */
+  readonly roundLimit: number;
+  /** each player's points to win in whole points (individual handicaps applied); empty when points to win is off */
+  readonly targets: Map<string, number>;
+  /** consecutive rounds each player has failed to reach the flag (comeback point after SCORING.comebackAfter) */
+  missStreak = new Map<string, number>();
   readonly competitive: boolean;
   world: World;
   nav: NavGraph;
@@ -307,15 +335,16 @@ export class Match {
   private startStatuses = new Map<string, PlayerStatus>();
   private navDirty: Rect[] = [];
   /** set once a player reaches the score to win; scoring and gameplay are frozen after it */
-  matchResult: { order: string[]; winners: string[]; rows: RoundRow[] } | null = null;
+  matchResult: { order: string[]; winners: string[]; rows: RoundRow[]; reason: 'target' | 'rounds' } | null = null;
   disposed = false;
   stats = { validations: 0, validationMs: 0, maxValidationMs: 0 };
 
-  constructor(room: Room, roster: string[], mapId: string, target: number, seed: number) {
+  constructor(room: Room, roster: string[], mapId: string, target: number, seed: number, roundLimit = 0, targets?: Map<string, number>) {
     this.room = room;
     this.roster = roster;
     this.target = target;
-    this.targetTenths = target * SCORING.unit;
+    this.roundLimit = roundLimit;
+    this.targets = targets ?? new Map(target > 0 ? roster.map(id => [id, target] as [string, number]) : []);
     this.competitive = roster.length >= 2;
     this.world = new World(mapId); // a new match always starts from the clean base map
     this.nav = NavGraph.fromBase(baseNav(mapId), this.world); // shared clean-map graph, derived from as the course changes
@@ -336,7 +365,7 @@ export class Match {
     this.room.broadcast(this.phaseMsg());
   }
   private phaseMsg(): ServerMsg {
-    return { t: 'phase', phase: this.phase, round: this.round, target: this.target, endsIn: Math.max(0, Math.round(this.deadline - this.now)), mapId: this.world.map.id, competitive: this.competitive, tally: Object.fromEntries(this.tally) };
+    return { t: 'phase', phase: this.phase, round: this.round, target: this.target, roundLimit: this.roundLimit, targets: Object.fromEntries(this.targets), endsIn: Math.max(0, Math.round(this.deadline - this.now)), mapId: this.world.map.id, competitive: this.competitive, tally: Object.fromEntries(this.tally) };
   }
   private draftMsg(): ServerMsg { return { t: 'draft', cards: this.pool, demolition: this.needDemolition, open: this.courseOpen, stage: this.draftStage }; }
 
@@ -589,7 +618,8 @@ export class Match {
     const race = this.race!;
     const statuses = new Map<string, PlayerStatus>(race.players.map(p => [p.id, p.status]));
     const known = race.players.every(p => p.status !== 'racing');
-    return scoreRound(this.roster, this.competitive, this.allEvents, statuses, this.tally, known);
+    const comeback = new Set(this.roster.filter(id => (this.missStreak.get(id) ?? 0) >= SCORING.comebackAfter));
+    return scoreRound(this.roster, this.competitive, this.allEvents, statuses, this.tally, known, comeback);
   }
 
   private stepRace() {
@@ -608,7 +638,7 @@ export class Match {
     const scoring = ev.some(e => e.type === 'finish' || e.type === 'bank' || (e.type === 'death' && e.credit)) || race.over;
     if (scoring) {
       const rows = this.liveRows();
-      const winners = rows.filter(r => r.matchTotal >= this.targetTenths).map(r => r.pid);
+      const winners = this.target > 0 ? rows.filter(r => r.matchTotal >= (this.targets.get(r.pid) ?? this.target) * SCORING.unit).map(r => r.pid) : [];
       if (winners.length) {
         race.over = true; // freeze gameplay: nothing steps or scores after the winning tick
         this.room.broadcast({ t: 'snap', s: race.snapshot(this.acks()), ev: ev.filter(e => e.type !== 'jump') });
@@ -624,6 +654,8 @@ export class Match {
 
   private bankRound(rows: RoundRow[]) {
     applyRound(rows, this.tally);
+    // finishing resets the miss streak; any other outcome extends it
+    for (const r of rows) this.missStreak.set(r.pid, r.time !== null ? 0 : (this.missStreak.get(r.pid) ?? 0) + 1);
     for (const r of rows) r.matchTotal = this.tally.get(r.pid)!.score;
     this.results.push(rows);
     // a coin carried to the flag is spent for the rest of the match
@@ -645,11 +677,25 @@ export class Match {
   }
 
   /** Somebody reached the score to win: end the match now, exactly once. */
+  private tenthsTargets() { return new Map([...this.targets].map(([k, v]) => [k, v * SCORING.unit] as [string, number])); }
+
   private endByTarget(rows: RoundRow[], winners: string[]) {
     if (this.matchResult) return;
     this.bankRound(rows);
-    const { order } = rankMatch(this.roster, this.tally);
-    this.matchResult = { order, winners, rows };
+    const { order } = rankMatch(this.roster, this.tally, this.tenthsTargets());
+    this.matchResult = { order, winners, rows, reason: 'target' };
+    this.finishMatch();
+  }
+
+  /** The round limit was reached: most points wins (share of each player's own target with handicaps); ties break on finishes, then time, else shared. */
+  private endByRounds(rows: RoundRow[]) {
+    if (this.matchResult) return;
+    const { order, winners } = rankMatch(this.roster, this.tally, this.target > 0 ? this.tenthsTargets() : undefined);
+    this.matchResult = { order, winners, rows, reason: 'rounds' };
+    this.finishMatch();
+  }
+
+  private finishMatch() {
     this.phase = 'matchEnd';
     this.race = null;
     this.setPhase('matchEnd', 0);
@@ -659,7 +705,7 @@ export class Match {
   private sendMatchEnd(id: string) {
     const r = this.matchResult;
     if (!r) return;
-    this.room.send(id, { t: 'matchEnd', order: r.order, winners: r.winners, tally: Object.fromEntries(this.tally), votes: [...this.room.votes], target: this.target, rows: r.rows, round: this.round });
+    this.room.send(id, { t: 'matchEnd', order: r.order, winners: r.winners, tally: Object.fromEntries(this.tally), votes: [...this.room.votes], target: this.target, roundLimit: this.roundLimit, targets: Object.fromEntries(this.targets), reason: r.reason, rows: r.rows, round: this.round });
   }
 
   // ---------------- clock
@@ -699,7 +745,11 @@ export class Match {
         this.stepRace();
         break;
       case 'results':
-        if (now >= this.deadline) this.startDraft(); // no round limit: the match goes on until somebody reaches the score to win
+        if (now >= this.deadline) {
+          // with a round limit, the match ends once the last round's results have been shown
+          if (this.roundLimit > 0 && this.round >= this.roundLimit) this.endByRounds(this.results[this.results.length - 1] ?? []);
+          else this.startDraft();
+        }
         break;
       default: break;
     }

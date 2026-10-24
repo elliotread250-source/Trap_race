@@ -11,12 +11,17 @@ export type DraftStage = 'humans' | 'ai';
 export interface MemberInfo {
   id: string; name: string; skin: number; color: number; bot: boolean; difficulty?: Difficulty;
   ready: boolean; connected: boolean; host: boolean; spectator: boolean;
+  /** individual points-to-win requirement (handicap), whole points; absent = the room's score to win */
+  target?: number;
 }
 
 export interface Card { id: string; item: string; by: string | null }
 
 export interface RoomInfo {
-  code: string; mode: 'online' | 'practice'; mapId: string; /** score to win, whole points (5-15) */ target: number; members: MemberInfo[];
+  code: string; mode: 'online' | 'practice'; mapId: string;
+  /** score to win, whole points (5-15), 0 = off */ target: number;
+  /** round limit (3-30), 0 = off; never both off */ roundLimit: number;
+  members: MemberInfo[];
   phase: Phase; round: number; youId: string; inviteable: boolean;
 }
 
@@ -29,6 +34,8 @@ export type ClientMsg =
   | { t: 'profile'; name: string; skin: number }
   | { t: 'host'; a: 'map'; mapId: string }
   | { t: 'host'; a: 'target'; target: number }
+  | { t: 'host'; a: 'rounds'; rounds: number }
+  | { t: 'host'; a: 'memberTarget'; id: string; target: number }
   | { t: 'host'; a: 'addBot'; difficulty: Difficulty }
   | { t: 'host'; a: 'removeBot'; id: string }
   | { t: 'host'; a: 'botDiff'; id: string; difficulty: Difficulty }
@@ -46,7 +53,7 @@ export type ServerMsg =
   | { t: 'welcome'; you: string; token: string; code: string }
   | { t: 'room'; room: RoomInfo }
   | { t: 'error'; code: string; msg: string }
-  | { t: 'phase'; phase: Phase; round: number; target: number; endsIn: number; mapId: string; competitive: boolean; tally: Record<string, PlayerTally> }
+  | { t: 'phase'; phase: Phase; round: number; target: number; roundLimit: number; targets: Record<string, number>; endsIn: number; mapId: string; competitive: boolean; tally: Record<string, PlayerTally> }
   | { t: 'world'; world: WorldSnapshot }
   | { t: 'draft'; cards: Card[]; demolition: boolean; open?: boolean; stage: DraftStage }
   | { t: 'claimed'; card: string; by: string }
@@ -58,7 +65,7 @@ export type ServerMsg =
   | { t: 'raceStart'; ids: string[]; roundKey: string; maxTicks: number }
   | { t: 'snap'; s: RaceSnapshot; ev: RaceEvent[] }
   | { t: 'results'; round: number; rows: RoundRow[]; competitive: boolean }
-  | { t: 'matchEnd'; order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; rows: RoundRow[]; round: number }
+  | { t: 'matchEnd'; order: string[]; winners: string[]; tally: Record<string, PlayerTally>; votes: string[]; target: number; roundLimit: number; targets: Record<string, number>; reason: 'target' | 'rounds'; rows: RoundRow[]; round: number }
   | { t: 'votes'; votes: string[] }
   | { t: 'notice'; msg: string }
   | { t: 'pong'; c: number; s: number; r?: string }
@@ -83,6 +90,8 @@ export function parseClientMsg(raw: unknown): ClientMsg | null {
       switch (m.a) {
         case 'map': return str(m.mapId, 32) ? (m as ClientMsg) : null;
         case 'target': return typeof m.target === 'number' ? (m as ClientMsg) : null; // range is enforced by the room, which answers with an error
+        case 'rounds': return typeof m.rounds === 'number' ? (m as ClientMsg) : null;
+        case 'memberTarget': return str(m.id, 32) && typeof m.target === 'number' ? (m as ClientMsg) : null;
         case 'addBot': return DIFFS.has(m.difficulty as string) ? (m as ClientMsg) : null;
         case 'removeBot': return str(m.id, 32) ? (m as ClientMsg) : null;
         case 'botDiff': return str(m.id, 32) && DIFFS.has(m.difficulty as string) ? (m as ClientMsg) : null;

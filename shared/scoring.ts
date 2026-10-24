@@ -11,6 +11,8 @@ export interface RoundRow {
   sole: number;
   trap: number;
   coins: number;
+  /** comeback point: reached the flag after missing it for SCORING.comebackAfter or more rounds in a row */
+  comeback: number;
   total: number;
   matchTotal: number;
   cause?: string;
@@ -23,8 +25,9 @@ export interface PlayerTally { score: number; finishes: number; finishTime: numb
  * @param roster participants at round start (decides competitiveness, never changes mid-round)
  * @param competitive true when the round started with 2+ competitors (bots count)
  * @param outcomeKnown nobody is still racing, so the sole-finisher bonus can be decided. Callers scoring mid-race pass false.
+ * @param comebackEligible players on a miss streak of SCORING.comebackAfter+ rounds: finishing this round earns the comeback point
  */
-export function scoreRound(roster: string[], competitive: boolean, events: RaceEvent[], statuses: Map<string, PlayerStatus>, prev: Map<string, PlayerTally>, outcomeKnown = true): RoundRow[] {
+export function scoreRound(roster: string[], competitive: boolean, events: RaceEvent[], statuses: Map<string, PlayerStatus>, prev: Map<string, PlayerTally>, outcomeKnown = true, comebackEligible: ReadonlySet<string> = new Set()): RoundRow[] {
   const inRoster = new Set(roster);
   const seen = new Set<string>();
   const unique = events.filter(e => (seen.has(e.id) ? false : (seen.add(e.id), true)));
@@ -54,17 +57,19 @@ export function scoreRound(roster: string[], competitive: boolean, events: RaceE
     const ft = finishTick.get(pid);
     const fin = ft !== undefined;
     const base = fin ? SCORING.finish : 0;
-    const first = competitive && fin && ft === earliest ? SCORING.firstFinisher : 0;
     // the sole bonus is only earned once the round is decided: nobody else can still finish
     const sole = competitive && outcomeKnown && fin && finishTick.size === 1 ? SCORING.soleFinisher : 0;
+    // a sole finisher gets the sole bonus instead of the first-finisher bonus, never both
+    const first = competitive && fin && ft === earliest && !sole ? SCORING.firstFinisher : 0;
     const trap = trapPts.get(pid) ?? 0;
     const coins = coinPts.get(pid) ?? 0;
-    const total = base + first + sole + trap + coins;
+    const comeback = competitive && fin && comebackEligible.has(pid) ? SCORING.comeback : 0;
+    const total = base + first + sole + trap + coins + comeback;
     const before = prev.get(pid)?.score ?? 0;
     const d = deaths.get(pid);
     return {
       pid, status: statuses.get(pid) ?? 'absent', time: fin ? ft! / TICK_HZ : null,
-      base, first, sole, trap, coins, total, matchTotal: before + total, cause: d?.cause, killer: d?.credit ?? null,
+      base, first, sole, trap, coins, comeback, total, matchTotal: before + total, cause: d?.cause, killer: d?.credit ?? null,
     };
   });
 }
@@ -78,11 +83,21 @@ export function applyRound(rows: RoundRow[], tally: Map<string, PlayerTally>) {
   }
 }
 
-/** Highest score, then most finishes, then lowest cumulative finish time; still equal means a shared win. */
-export function rankMatch(ids: string[], tally: Map<string, PlayerTally>): { order: string[]; winners: string[] } {
+/**
+ * Highest score, then most finishes, then lowest cumulative finish time; still equal means a shared win.
+ * With individual win requirements (handicaps) `targets` holds each player's points to win in tenths, and players are
+ * ranked by how much of their own requirement they have earned instead of raw points.
+ */
+export function rankMatch(ids: string[], tally: Map<string, PlayerTally>, targets?: ReadonlyMap<string, number>): { order: string[]; winners: string[] } {
   const get = (id: string) => tally.get(id) ?? { score: 0, finishes: 0, finishTime: 0 };
+  const handicap = !!targets && new Set(ids.map(id => targets.get(id))).size > 1;
   const cmp = (a: string, b: string) => {
     const A = get(a), B = get(b);
+    if (handicap) {
+      // compare A.score / tA with B.score / tB without float noise
+      const d = B.score * targets!.get(a)! - A.score * targets!.get(b)!;
+      if (d !== 0) return d;
+    }
     if (B.score !== A.score) return B.score - A.score;
     if (B.finishes !== A.finishes) return B.finishes - A.finishes;
     if (A.finishes > 0 && Math.abs(A.finishTime - B.finishTime) > 1e-9) return A.finishTime - B.finishTime;
